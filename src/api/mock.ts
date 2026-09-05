@@ -89,8 +89,8 @@ const mock = {
           case "test_webdav": resolve({ ok: true, message: "连接正常" }); break;
           case "detect_source": {
             const mockDirs: Record<string, string> = {
-              antigravity: "C:\\Users\\YOUR_NAME\\.gemini\\antigravity",
-              "antigravity-ide": "C:\\Users\\YOUR_NAME\\.gemini\\antigravity-ide",
+              antigravity: "C:\\Users\\YOUR_NAME\\AppData\\Roaming\\Antigravity",
+              "antigravity-ide": "C:\\Users\\YOUR_NAME\\AppData\\Roaming\\Antigravity IDE",
             };
             const path = mockDirs[args.source] || `C:\\Users\\YOUR_NAME\\.${args.source}`;
             resolve({ ok: true, path, deviceId: LOCAL_DEVICE });
@@ -100,8 +100,8 @@ const mock = {
             { source: "zcode", name: "ZCode", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\.zcode", readable: true, lastSyncAt: Date.now() - 60000 },
             { source: "codex", name: "Codex", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\.codex", readable: true, lastSyncAt: Date.now() - 60000 },
             { source: "dsh", name: "DeepSeek Harness", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\.dsh", readable: true, lastSyncAt: Date.now() - 60000 },
-            { source: "antigravity", name: "Antigravity", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\.gemini\\antigravity", readable: true, lastSyncAt: Date.now() - 60000 },
-            { source: "antigravity-ide", name: "Antigravity IDE", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\.gemini\\antigravity-ide", readable: true, lastSyncAt: Date.now() - 60000 },
+            { source: "antigravity", name: "Antigravity", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\AppData\\Roaming\\Antigravity", readable: true, lastSyncAt: Date.now() - 60000 },
+            { source: "antigravity-ide", name: "Antigravity IDE", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\AppData\\Roaming\\Antigravity IDE", readable: true, lastSyncAt: Date.now() - 60000 },
           ]); break;
           case "get_summary": {
             const localRecs = allRecords.filter((r) => r.deviceId === LOCAL_DEVICE && (!args.source || r.source === args.source));

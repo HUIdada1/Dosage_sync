@@ -46,9 +46,9 @@
 │       ├── adapter-zcode.cjs # ZCode 适配器（读 ~/.zcode）
 │       ├── adapter-codex.cjs # Codex 适配器（读 ~/.codex）
 │       ├── adapter-dsh.cjs # DeepSeek Harness 适配器（读 ~/.dsh）
-│       ├── adapter-antigravity-common.cjs # Antigravity 系公共工厂（配额快照统计）
-│       ├── adapter-antigravity.cjs # Antigravity 适配器（读 ~/.gemini/antigravity）
-│       ├── adapter-antigravity-ide.cjs # Antigravity IDE 适配器（读 ~/.gemini/antigravity-ide）
+│       ├── adapter-antigravity-common.cjs # Antigravity 系公共工厂（state.vscdb 配额池快照差值）
+│       ├── adapter-antigravity.cjs # Antigravity 适配器（读 %APPDATA%/Antigravity）
+│       ├── adapter-antigravity-ide.cjs # Antigravity IDE 适配器（读 %APPDATA%/Antigravity IDE）
 │       ├── webdav.cjs      # WebDAV 客户端（原生 fetch）
 │       ├── sync.cjs        # 四阶段同步引擎
 │       ├── scheduler.cjs   # 定时调度
@@ -66,12 +66,12 @@
 | ZCode | `~/.zcode` | `cli/db/db.sqlite` 的 `model_usage` | 启用 |
 | Codex | `~/.codex` | `sessions/**/rollout-*.jsonl` 的单次 `last_token_usage` | 停用 |
 | DeepSeek Harness | `~/.dsh` | `tokenledger.sqlite` 的 `session_rollups` | 停用 |
-| Antigravity（旧版） | `~/.gemini/antigravity`（应用数据在 `%APPDATA%/Antigravity`） | 本地语言服务配额快照差值 | 停用 |
-| Antigravity IDE（新版） | `~/.gemini/antigravity-ide`（应用数据在 `%APPDATA%/Antigravity IDE`） | 本地语言服务配额快照差值 | 停用 |
+| Antigravity（旧版） | `%APPDATA%/Antigravity` | `User/globalStorage/state.vscdb` 的配额状态缓存 | 停用 |
+| Antigravity IDE（新版） | `%APPDATA%/Antigravity IDE` | `User/globalStorage/state.vscdb` 的配额状态缓存 | 停用 |
 
 Codex、DSH 与两个 Antigravity 源需要在设置页手动启用。五种来源共用本机设备 ID，记录依靠 `source` 隔离；切换顶部数据源后，总览、设备、趋势、热力图与明细会同步切换统计范围，各源统计互不影响。
 
-> **Antigravity 系统计口径说明**：Antigravity 新旧两代本地都没有 token 用量明细文件（用量存在 Google 云端），本地只能读取会话记录。因此采用「配额余额快照法」：每次同步时调用其本地语言服务接口读取配额已用量（可分模型），按两次快照的差值生成用量记录。**数值单位是配额点数而非 token**；需 Antigravity 正在运行才能读取；首次同步只建立基线，自第二次同步起按差值统计；配额周期重置时自动重新从 0 累计。未运行或接口失败时该源跳过并写同步日志，不影响其他源。
+> **Antigravity 系统计口径说明**：Antigravity 新旧两代本地都没有 token 用量明细（官方配额按「请求额度」而非 token 计量），本地唯一用量信号是 `%APPDATA%/<应用>/User/globalStorage/state.vscdb` 中缓存的**模型配额剩余比例（0~1）与重置时间**。因此采用「配额池快照差值法」：每次同步只读解析该文件，按剩余比例的下降量入账；配额池（剩余比例与重置时间完全相同的模型组，如 Gemini 全系共享一池）合并为一条记录，池名取模型名公共前缀；池首次出现或周期重置时记当前累计 `(1-剩余)×100`；剩余回升（补额度/换账号）不计。**数值单位是配额百分比点（消耗 3.13% 记 3.13）而非 token**；无需 Antigravity 正在运行，读的是其最近一次联网时缓存的状态；配额比例仅在 Antigravity 联网时刷新，建议用完软件后同步。解析失败（旧版格式变动）时优雅跳过并写日志，不影响其他源。
 
 ## 快速开始
 
