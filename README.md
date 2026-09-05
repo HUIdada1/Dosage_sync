@@ -2,10 +2,11 @@
 
 一个 Windows 托盘常驻工具：自动读取本机 ZCode、Codex、DeepSeek Harness、Antigravity 与 Antigravity IDE 的模型用量，按「电脑」为单元同步到自建 WebDAV，并在多台电脑之间汇总展示。
 
-- **五数据源已接入**：支持 ZCode、Codex、DeepSeek Harness（DSH）、Antigravity、Antigravity IDE，各源可独立启用、探测、同步和筛选。
+- **三数据源已接入**：支持 ZCode、Codex、DeepSeek Harness（DSH），各源可独立启用、探测、同步和筛选；Antigravity 系两源（Antigravity / Antigravity IDE）的适配器代码保留但暂时隐藏，恢复方法见 `electron/backend/adapter.cjs`。
 - **存储后端可扩展**：当前优先支持自建飞牛 fnOS 的 WebDAV，后续可增加 Nextcloud / 坚果云 / 群晖 / 自定义。
 - **聚合灵活**：累计 token 可按软件源、设备、模型和供应商隔离查询，支持多模型多类型。
 - **可视化**：曲线趋势图 + GitHub 风格蓝色热力点阵图（15 档）+ 时间/设备/模型多维筛选，深色/浅色主题（默认浅色）。
+- **隐私提示**：同步到 WebDAV 的分片为明文 gzip JSONL（含设备名、模型、会话 ID 等用量数据），请确保自建服务器可信；传输建议使用 https。
 
 ## 技术栈
 
@@ -15,7 +16,7 @@
 | 前端 | Vue 3 + TypeScript + Vite + Pinia + ECharts |
 | 后端 | Node.js（`node:sqlite` / 原生 fetch） |
 | 本地库 | SQLite（Node 22 内置 `node:sqlite`，与各源数据库分离） |
-| 打包 | electron-builder：NSIS 安装包 + portable 便携版单 exe |
+| 打包 | electron-builder：NSIS 安装包 + portable 便携版单 exe（便携版数据跟随 exe 同目录 `data/`，但不支持开机自启——注册的会是临时解压副本） |
 
 ## 目录结构
 
@@ -70,6 +71,10 @@
 | Antigravity IDE（新版） | `%APPDATA%/Antigravity IDE` | `User/globalStorage/state.vscdb` 的配额状态缓存 | 停用 |
 
 Codex、DSH 与两个 Antigravity 源需要在设置页手动启用。五种来源共用本机设备 ID，记录依靠 `source` 隔离；切换顶部数据源后，总览、设备、趋势、热力图与明细会同步切换统计范围，各源统计互不影响。
+
+> **Token 口径说明（已实测确认）**：三个 token 源的「输入」均包含缓存命中——ZCode 为源数据原生口径，DSH 由适配器归一化补入，Codex 已用本机 rollout 原始数据实测确认（OpenAI 语义中 `cached_input_tokens` 是 `input_tokens` 的子集）。因此缓存命中率 = 缓存命中 / 输入在跨源对比时口径一致，命中率恒 ≤ 100%。
+
+同步采用**分片级增量传输**：每个日分片以内容哈希记账，内容未变化时自动跳过上传/下载，同步耗时不随历史数据量线性增长。退役设备可在侧边栏悬停设备项点「×」删除（同时清理 WebDAV 上的该设备数据与本地记录，本机不可删）。
 
 > **Antigravity 系统计口径说明**：Antigravity 新旧两代本地都没有 token 用量明细（官方配额按「请求额度」而非 token 计量），本地唯一用量信号是 `%APPDATA%/<应用>/User/globalStorage/state.vscdb` 中缓存的**模型配额剩余比例（0~1）与重置时间**。因此采用「配额池快照差值法」：每次同步只读解析该文件，按剩余比例的下降量入账；配额池（剩余比例与重置时间完全相同的模型组，如 Gemini 全系共享一池）合并为一条记录，池名取模型名公共前缀；池首次出现或周期重置时记当前累计 `(1-剩余)×100`；剩余回升（补额度/换账号）不计。**数值单位是配额百分比点（消耗 3.13% 记 3.13）而非 token**；无需 Antigravity 正在运行，读的是其最近一次联网时缓存的状态；配额比例仅在 Antigravity 联网时刷新，建议用完软件后同步。解析失败（旧版格式变动）时优雅跳过并写日志，不影响其他源。
 >

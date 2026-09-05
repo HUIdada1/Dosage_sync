@@ -1,8 +1,10 @@
 // 应用级状态：配置、主题、当前数据源、同步状态
 import { defineStore } from "pinia";
-import type { AppConfig, SyncProgress, SyncStage, TotalMode } from "../types";
+import type { AppConfig, SourceInfo, SyncProgress, SyncStage, TotalMode } from "../types";
 import * as api from "../api/ipc";
 
+// 浏览器 mock / 后端加载失败时的兜底默认值；后端权威默认值见 electron/backend/config.cjs
+import { TOTAL_MODES } from "../types";
 const defaultConfig: AppConfig = {
   deviceName: "这台电脑",
   webdav: { endpoint: "", username: "", password: "", root: "/dosage-sync", preset: "feiniu" },
@@ -14,10 +16,9 @@ const defaultConfig: AppConfig = {
     // { source: "antigravity", enabled: false, dataDir: null },
     // { source: "antigravity-ide", enabled: false, dataDir: null },
   ],
-  schedule: { hourly: false, hourlyInterval: 1, daily: false, dailyTime: "23:30", autoStart: false, minimizeToTray: true },
+  schedule: { hourly: false, hourlyInterval: 1, daily: false, dailyTime: "23:30", autoStart: false, minimizeToTray: true, notifyOnSuccess: false },
   totalMode: "full",
   theme: "light",
-  portableMode: false,
 };
 
 export const useAppStore = defineStore("app", {
@@ -26,6 +27,8 @@ export const useAppStore = defineStore("app", {
     loaded: false,
     activePage: "overview" as "overview" | "detail" | "log" | "settings",
     activeSource: "zcode" as string,
+    // 数据源清单（id/name 来自后端适配器，唯一事实源；enabled 为磁盘配置中的状态）
+    sources: [] as SourceInfo[],
     sync: { running: false, stage: "idle" as SyncStage, stageLabel: "", percent: 0, message: "", lastSyncAt: null } as SyncProgress & { lastSyncAt: number | null },
     syncing: false,
     syncDialogOpen: false,
@@ -36,6 +39,7 @@ export const useAppStore = defineStore("app", {
     isDark: (s) => s.config.theme === "dark",
     totalMode: (s) => s.config.totalMode,
     isSourceEnabled: (s) => (source: string) => !!s.config.sources.find((item) => item.source === source)?.enabled,
+    sourceName: (s) => (source: string) => s.sources.find((item) => item.id === source)?.name || source,
   },
   actions: {
     async load() {
@@ -44,13 +48,24 @@ export const useAppStore = defineStore("app", {
       Object.assign(this.config, loaded);
       if (loaded.webdav) Object.assign(this.config.webdav, loaded.webdav);
       if (loaded.schedule) Object.assign(this.config.schedule, loaded.schedule);
+      // 口径兜底：后端已归一化，这里再防 mock/异常值（platform 选项已移除，等效 compact）
+      if (!TOTAL_MODES[this.config.totalMode]) this.config.totalMode = "compact";
       } catch {
         this.config = { ...defaultConfig };
       }
       this.loaded = true;
       this.applyTheme(this.config.theme);
       this.loadDataDir();
+      this.loadSources();
       this.startProgressPolling();
+    },
+    /** 来源清单：name 唯一事实源在后端适配器，前端不再硬编码；失败时退回本地配置（仅 id） */
+    async loadSources() {
+      try {
+        this.sources = await api.listSources();
+      } catch {
+        this.sources = this.config.sources.map((s) => ({ id: s.source, name: s.source, enabled: s.enabled }));
+      }
     },
     async loadDataDir() {
       try {

@@ -84,7 +84,7 @@ function triggerSync() {
 function todaySummary() {
   try {
     const cfg = config.loadConfig();
-    const s = db.getSummary(db.getLocalDeviceId(), cfg.totalMode || "full");
+    const s = db.getSummary(cfg.totalMode || "full");
     return s && s.todayTokens >= 0 ? s.todayTokens : null;
   } catch {
     return null;
@@ -117,11 +117,21 @@ function formatNum(n) {
   return String(Math.round(n));
 }
 
-/** 桌面通知：同步完成/失败 */
+/** 桌面通知：默认仅同步失败提醒，设置页可开启「成功也通知」；失败持续期间不重复弹，状态翻转才弹 */
+let lastNotifiedOk = null;
 function notifySync(ok, message) {
   try {
     refreshTrayMenu(); // 同步结束后刷新托盘「今日用量摘要」
     if (!Notification.isSupported()) return;
+    const cfg = config.loadConfig();
+    if (ok) {
+      lastNotifiedOk = true;
+      if (!(cfg.schedule && cfg.schedule.notifyOnSuccess)) return;
+    } else {
+      // 失败持续中（上次通知的也是失败）不重复打扰；首次失败/失败恢复后再失败才提醒
+      if (lastNotifiedOk === false) return;
+      lastNotifiedOk = false;
+    }
     const n = new Notification({
       title: ok ? "用量同步完成" : "用量同步失败",
       body: message || (ok ? "本机用量已上传并拉取最新数据" : "请检查 WebDAV 配置"),
@@ -162,9 +172,9 @@ if (!gotLock) {
     createTray();
     scheduler.start();
 
-    // 依据配置启用开机自启
+    // 依据配置启用开机自启（便携版不支持：注册的会是临时解压副本路径，退出即失效）
     const cfg = config.loadConfig();
-    if (cfg.schedule && cfg.schedule.autoStart) {
+    if (cfg.schedule && cfg.schedule.autoStart && !config.isPortable()) {
       app.setLoginItemSettings({ openAtLogin: true });
     }
 

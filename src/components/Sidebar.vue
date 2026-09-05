@@ -3,6 +3,8 @@ import { computed } from "vue";
 import { useAppStore } from "../stores/app";
 import { useUsageStore } from "../stores/usage";
 import { formatNumber, timeAgo } from "../composables/useFormat";
+import * as api from "../api/ipc";
+import type { DeviceMeta } from "../types";
 import logoUrl from "../assets/logo.png";
 
 const app = useAppStore();
@@ -23,6 +25,22 @@ function onSelectDevice(deviceId: string | null) {
     app.setPage("overview");
   }
   usage.selectDevice(deviceId);
+}
+
+/** 删除退役设备：后端保证先删 WebDAV 远端数据、成功后才清本地记录 */
+async function removeDevice(d: DeviceMeta) {
+  const ok = window.confirm(
+    `确定删除退役设备「${d.deviceName}」吗？\n\n将同时删除 WebDAV 上的该设备数据与本地记录，不可恢复。`
+  );
+  if (!ok) return;
+  const r = await api.deleteDevice(d.deviceId);
+  if (!r || !r.ok) {
+    window.alert(r?.message || "删除设备失败");
+    return;
+  }
+  if (usage.selectedDeviceId === d.deviceId) usage.selectedDeviceId = null;
+  await usage.refreshDevices();
+  await usage.loadOverview();
 }
 </script>
 
@@ -94,6 +112,12 @@ function onSelectDevice(deviceId: string | null) {
         <div class="dmeta">{{ timeAgo(d.lastSyncAt) }}</div>
       </div>
       <div class="dnum"><b class="mono">{{ formatNumber(d.totalTokens) }}</b></div>
+      <button
+        v-if="!d.isLocal"
+        class="dev-del"
+        title="删除该退役设备（同时删除 WebDAV 上的数据）"
+        @click.stop="removeDevice(d)"
+      >×</button>
     </div>
   </aside>
 </template>

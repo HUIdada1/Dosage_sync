@@ -46,15 +46,7 @@ watch(
   { immediate: true }
 );
 
-const sourceNames: Record<string, string> = {
-  zcode: "ZCode",
-  codex: "Codex",
-  dsh: "DeepSeek Harness",
-  // 【暂时隐藏 Antigravity 系】
-  // antigravity: "Antigravity",
-  // "antigravity-ide": "Antigravity IDE",
-};
-const activeSourceName = computed(() => sourceNames[app.activeSource] || app.activeSource);
+const activeSourceName = computed(() => app.sourceName(app.activeSource));
 const activeSourceEnabled = computed(() => app.isSourceEnabled(app.activeSource));
 
 const selectedDev = computed(() => usage.selectedDevice);

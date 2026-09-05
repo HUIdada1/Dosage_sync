@@ -78,6 +78,11 @@ export const useUsageStore = defineStore("usage", {
       this.selectedDeviceId = deviceId;
       await this.loadOverview();
     },
+    /** 刷新设备列表（明细页设备下拉独立于总览加载数据时使用） */
+    async refreshDevices() {
+      const app = useAppStore();
+      this.devices = await api.getDevices(app.totalMode, app.activeSource);
+    },
     async setDevice(deviceId: string | null) {
       this.selectedDeviceId = deviceId;
       await this.loadOverview();

@@ -292,6 +292,32 @@ button {
   color: #fff;
 }
 
+/* 设备项 hover 显示的删除按钮（退役设备清理，仅非本机设备渲染） */
+.device .dev-del {
+  opacity: 0;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: opacity .15s ease, background .15s ease, color .15s ease;
+}
+
+.device:hover .dev-del,
+.device .dev-del:focus-visible {
+  opacity: 1;
+}
+
+.device .dev-del:hover {
+  background: rgba(220, 38, 38, .12);
+  color: var(--err);
+}
+
 .device {
   display: flex;
   align-items: center;
@@ -1838,9 +1864,15 @@ button {
   color: var(--ok);
 }
 
-.log-item .licon.err {
+.log-item .licon.err,
+.log-item .licon.error {
   background: rgba(220, 38, 38, 0.12);
   color: var(--err);
+}
+
+.log-item .licon.warn {
+  background: rgba(217, 119, 6, 0.12);
+  color: var(--warn);
 }
 
 .log-item .licon.info {

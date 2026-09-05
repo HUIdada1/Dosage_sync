@@ -9,14 +9,11 @@ const adapter = require("./adapter.cjs");
 const webdav = require("./webdav.cjs");
 const sync = require("./sync.cjs");
 
-const SOURCE_META = {
-  zcode: { name: "ZCode" },
-  codex: { name: "Codex" },
-  dsh: { name: "DeepSeek Harness" },
-  // 【暂时隐藏 Antigravity 系】
-  // antigravity: { name: "Antigravity" },
-  // "antigravity-ide": { name: "Antigravity IDE" },
-};
+/** 数据源在配置中的启用状态 */
+function sourceEnabled(cfg, id) {
+  const s = (cfg.sources || []).find((item) => item.source === id);
+  return !!s && s.enabled;
+}
 
 /** 注册所有 IPC handler。ctx = { ipcMain, app, shell } */
 function register(ctx) {
@@ -48,6 +45,12 @@ function register(ctx) {
   });
 
   // ===== 数据源 =====
+  // 来源清单（唯一事实源是各适配器的 name 字段；前端顶栏/空状态/设置页均由此渲染）
+  ipcMain.handle("list_sources", () => {
+    const cfg = config.loadConfig();
+    return adapter.sources.map((s) => ({ id: s.id, name: s.name, enabled: sourceEnabled(cfg, s.id) }));
+  });
+
   ipcMain.handle("detect_source", (_e, args) => {
     const src = adapter.byId(args.source);
     if (!src) return { ok: false, path: null, deviceId: null };
@@ -65,7 +68,7 @@ function register(ctx) {
       const dir = sourceCfg?.dataDir || s.detect();
       return {
         source: s.id,
-        name: (SOURCE_META[s.id] || {}).name || s.id,
+        name: s.name,
         detected: !!dir,
         dataDir: dir,
         readable: dir ? s.validate(dir) : false,
@@ -75,7 +78,7 @@ function register(ctx) {
   });
 
   // ===== 汇总查询 =====
-  ipcMain.handle("get_summary", (_e, args) => db.getSummary(db.getLocalDeviceId(), args.mode, args.deviceId, args.source));
+  ipcMain.handle("get_summary", (_e, args) => db.getSummary(args.mode, args.deviceId, args.source));
   ipcMain.handle("get_trend", (_e, args) => db.getTrend(args.mode, args.days, args.deviceId, args.source));
   ipcMain.handle("get_heatmap", (_e, args) => db.getHeatmap(args.mode, args.start, args.end, args.deviceId, args.source));
   ipcMain.handle("get_aggregate", (_e, args) => db.getAggregate(args.mode, args.dim, args.from, args.to, args.source));
@@ -111,19 +114,48 @@ function register(ctx) {
     return db.getDevices(localId, args.mode, args.source);
   });
 
+  // 删除退役设备：先删 WebDAV 远端数据（失败即中止，防止下次同步把数据拉回），再清本地记录
+  ipcMain.handle("delete_device", async (_e, args) => {
+    const deviceId = args && args.deviceId;
+    try {
+      if (!deviceId || typeof deviceId !== "string") return { ok: false, message: "缺少设备 ID" };
+      const localId = db.getLocalDeviceId();
+      if (deviceId === localId) return { ok: false, message: "本机设备不能删除" };
+      // 同步进行中拒绝删除：否则已合并的该设备数据会在本次同步尾段被重新写回
+      if (sync.progress().running) return { ok: false, message: "同步正在进行中，请稍后再删除设备" };
+      const cfg = config.loadConfig();
+      if (cfg.webdav && cfg.webdav.endpoint) {
+        await webdav.remove(
+          webdav.joinUrl(cfg.webdav.endpoint, cfg.webdav.root, `${sync.DEVICES_DIR}/${deviceId}.json`),
+          cfg.webdav
+        );
+        await webdav.remove(
+          webdav.joinUrl(cfg.webdav.endpoint, cfg.webdav.root, `${sync.DATA_DIR}/${deviceId}`),
+          cfg.webdav
+        );
+      }
+      db.deleteDeviceData(deviceId);
+      db.addLog("merge", "info", `已删除退役设备 ${deviceId}（本地记录与 WebDAV 数据）`);
+      return { ok: true, message: "设备已删除" };
+    } catch (e) {
+      return { ok: false, message: `删除设备失败：${e.message}` };
+    }
+  });
+
   // ===== 导出 =====
-  ipcMain.handle("export_data", (_e, args) => {
+  ipcMain.handle("export_data", async (_e, args) => {
     try {
       const ext = args.format === "json" ? "json" : "csv";
-      const content = args.format === "json"
-        ? db.exportJson(args.from, args.to)
-        : db.exportCsv(args.from, args.to);
+      // filter 为空对象/缺省时导出全部明细；DetailView 会传当前筛选条件与日期范围
+      const filter = args.filter && typeof args.filter === "object" ? args.filter : {};
+      const content = args.format === "json" ? db.exportJson(filter) : db.exportCsv(filter);
       const dir = app.getPath("downloads");
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      // 文件名精确到毫秒，避免同一秒内多次导出互相覆盖
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 23);
       const file = path.join(dir, `dosage-export-${stamp}.${ext}`);
       // CSV 加 UTF-8 BOM，Excel 打开中文不乱码；JSON 无需 BOM
       const buf = args.format === "json" ? content : "\uFEFF" + content;
-      fs.writeFileSync(file, buf, "utf8");
+      await fs.promises.writeFile(file, buf, "utf8");
       return { ok: true, path: file, message: "导出成功" };
     } catch (e) {
       return { ok: false, path: null, message: e.message };
@@ -141,10 +173,23 @@ function register(ctx) {
 
   ipcMain.handle("get_app_version", () => app.getVersion());
 
-  // 模型元数据：当前 UI 未消费，预留空表（后续接入价格/档位展示）
-  ipcMain.handle("get_model_metas", () => ({}));
+  ipcMain.handle("get_is_portable", () => config.isPortable());
+
+  // 清空本地缓存：删除本地明细与增量记账，远端 WebDAV 数据不动，下次同步自动重拉重建
+  ipcMain.handle("reset_local_cache", () => {
+    try {
+      if (sync.progress().running) return { ok: false, message: "同步正在进行中，请稍后再清空" };
+      db.clearLocalCache(db.getLocalDeviceId());
+      db.addLog("merge", "info", "已清空本地缓存（WebDAV 数据不受影响，下次同步将自动重拉）");
+      return { ok: true, message: "本地缓存已清空" };
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+  });
 
   ipcMain.handle("set_autostart", (_e, args) => {
+    // 便携版兜底拒绝（设置页已禁用开关）：注册的会是临时解压副本路径，退出即失效
+    if (config.isPortable()) return null;
     app.setLoginItemSettings({ openAtLogin: !!args.enabled });
     return null;
   });

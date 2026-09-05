@@ -8,6 +8,10 @@ const config = require("./config.cjs");
 
 let _db = null;
 
+// 当前 schema 版本。旧库（user_version=0）首次打开时迁移到该版本；
+// 未来变更表结构时：SCHEMA_VERSION+1，并在 init() 的迁移块中追加对应 ALTER/重建步骤
+const SCHEMA_VERSION = 1;
+
 /** 获取（惰性打开）单例连接 */
 function get() {
   if (_db) return _db;
@@ -46,6 +50,7 @@ function init(db) {
     CREATE INDEX IF NOT EXISTS idx_record_started ON usage_record(started_at);
     CREATE INDEX IF NOT EXISTS idx_record_model ON usage_record(model_id);
     CREATE INDEX IF NOT EXISTS idx_record_source ON usage_record(source);
+    CREATE INDEX IF NOT EXISTS idx_record_source_started ON usage_record(source, started_at);
 
     CREATE TABLE IF NOT EXISTS checkpoint (
         source TEXT PRIMARY KEY,
@@ -73,6 +78,15 @@ function init(db) {
         detail TEXT
     );
   `);
+
+  // schema 版本迁移：按版本逐级执行，PRAGMA user_version 不可参数化故用常量拼接
+  const row = db.prepare("PRAGMA user_version").get();
+  const current = row && Number(row.user_version) ? Number(row.user_version) : 0;
+  if (current < SCHEMA_VERSION) {
+    // 0 → 1：仅把既有表/索引纳入版本管理，无数据变更；未来加列示例：
+    // if (current < 2) db.exec("ALTER TABLE usage_record ADD COLUMN ...");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  }
 }
 
 // ===== 明细写入（幂等） =====
@@ -92,7 +106,7 @@ function insertRecords(records) {
   try {
     for (const r of records) {
       stmt.run(
-        r.id, r.deviceId, r.deviceName, r.source, r.providerId, r.modelId,
+        r.id, r.deviceId, r.deviceName ?? "", r.source ?? "unknown", r.providerId ?? "", r.modelId ?? "",
         r.variant ?? null, r.taskType ?? null, r.sessionId ?? null, r.agent ?? null, r.mode ?? null,
         r.inputTokens ?? 0, r.outputTokens ?? 0, r.reasoningTokens ?? 0,
         r.cacheCreationTokens ?? 0, r.cacheReadTokens ?? 0,
@@ -136,11 +150,12 @@ function setAnchor(source, anchor) {
 }
 
 function upsertDevice(deviceId, deviceName, source, lastSyncAt) {
+  const existing = get().prepare("SELECT device_name FROM device_meta WHERE device_id = ?").get(deviceId);
   get().prepare(
     "INSERT OR REPLACE INTO device_meta (device_id, device_name, source, last_sync_at) VALUES (?,?,?,?)"
   ).run(deviceId, deviceName, source, lastSyncAt ?? null);
-  // 联动更新已存记录中的设备名称，确保同一设备 ID 下名称绝对统一
-  if (deviceName) {
+  // 联动更新已存记录中的设备名称，确保同一设备 ID 下名称绝对统一；名称未变化时跳过，避免每次全量 UPDATE
+  if (deviceName && (!existing || existing.device_name !== deviceName)) {
     get().prepare(
       "UPDATE usage_record SET device_name = ? WHERE device_id = ?"
     ).run(deviceName, deviceId);
@@ -168,6 +183,13 @@ function getLogs() {
 
 function clearLogs() {
   get().exec("DELETE FROM sync_log");
+}
+
+/** 只保留最近 keep 条日志（随同步完成自动裁剪） */
+function pruneLogs(keep = 1000) {
+  get().prepare(
+    "DELETE FROM sync_log WHERE id NOT IN (SELECT id FROM sync_log ORDER BY id DESC LIMIT ?)"
+  ).run(keep);
 }
 
 // ===== 聚合查询 =====
@@ -199,17 +221,10 @@ function whereSql(clauses) {
   return clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
 }
 
-function getSummary(localDeviceId, mode, targetDeviceId = null, source = null) {
+function getSummary(mode, targetDeviceId = null, source = null) {
   const db = get();
   const extra = extraExpr(mode);
-  const allScope = recordScope(source);
   const selectedScope = recordScope(source, targetDeviceId);
-
-  // 当前软件源的全网总量（用于计算单个设备时的占比等）
-  const allRow = db.prepare(
-    `SELECT COALESCE(SUM(input_tokens + output_tokens${extra}), 0) AS t FROM usage_record${whereSql(allScope.clauses)}`
-  ).get(...allScope.params);
-  const allTotalTokens = allRow ? allRow.t : 0;
 
   const t0 = todayStartMs();
   const todayScope = {
@@ -232,28 +247,12 @@ function getSummary(localDeviceId, mode, targetDeviceId = null, source = null) {
      FROM usage_record${whereSql(selectedScope.clauses)}`
   ).get(...selectedScope.params);
 
-  let localTokens = targetDeviceId ? totalRow.t : 0;
-  if (!targetDeviceId && localDeviceId) {
-    const localScope = recordScope(source, localDeviceId);
-    localTokens = db.prepare(
-      `SELECT COALESCE(SUM(input_tokens + output_tokens${extra}), 0) AS t
-       FROM usage_record${whereSql(localScope.clauses)}`
-    ).get(...localScope.params).t;
-  }
-  const remoteTokens = allTotalTokens - localTokens;
-
   const cacheHitRate = b.i > 0 ? b.cr / b.i : 0;
   const todayCacheHitRate = td.i > 0 ? td.cr / td.i : 0;
-  const deviceCount = db.prepare(
-    `SELECT COUNT(DISTINCT device_id) AS c FROM usage_record${whereSql(allScope.clauses)}`
-  ).get(...allScope.params).c;
 
   return {
     totalTokens: totalRow.t,
     todayTokens: td.t,
-    localTokens,
-    remoteTokens,
-    allTotalTokens,
     cacheHitRate,
     todayCacheHitRate,
     cacheReadTokens: b.cr,
@@ -264,9 +263,7 @@ function getSummary(localDeviceId, mode, targetDeviceId = null, source = null) {
     todayInputTokens: td.i,
     todayCacheReadTokens: td.cr,
     todayRecordCount: td.c,
-    deviceCount,
     recordCount: totalRow.c,
-    selectedDeviceId: targetDeviceId || null,
   };
 }
 
@@ -279,7 +276,7 @@ function getDevices(localDeviceId, mode, source = null) {
     `SELECT d.device_id AS deviceId, d.device_name AS deviceName, d.source AS source, d.last_sync_at AS lastSyncAt,
             COALESCE(SUM(r.input_tokens + r.output_tokens${extra}), 0) AS base, COUNT(r.id) AS recordCount
      FROM device_meta d LEFT JOIN usage_record r ON r.device_id = d.device_id${sourceJoin}
-     GROUP BY d.device_id ORDER BY d.device_id`
+     GROUP BY d.device_id ORDER BY base DESC, d.device_name ASC`
   ).all(...params);
   const now = nowMs();
   return rows.filter((row) => !source || row.deviceId === localDeviceId || row.recordCount > 0).map((row) => ({
@@ -418,7 +415,34 @@ function rowToRecord(row) {
   };
 }
 
-function getRecords(filter = {}) {
+// ===== 按天分片读取（同步上传用：避免全量记录驻留内存与分页 COUNT 浪费） =====
+
+/** 本机有记录的全部 UTC 日（"YYYY-MM-DD" 升序），与上传分片文件名口径一致（SQLite date() 默认 UTC） */
+function getRecordDays(deviceId) {
+  return get().prepare(
+    "SELECT DISTINCT date(started_at/1000, 'unixepoch') AS day FROM usage_record WHERE device_id = ? ORDER BY day ASC"
+  ).all(deviceId).map((r) => r.day);
+}
+
+/** 某设备某 UTC 日的全部记录（升序），返回 UsageRecord 结构 */
+function getRecordsByDay(deviceId, day) {
+  const m = String(day || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return [];
+  const start = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  return get().prepare(
+    `SELECT id, device_id AS deviceId, device_name AS deviceName, source, provider_id AS providerId,
+            model_id AS modelId, variant, task_type AS taskType, session_id AS sessionId, agent, mode,
+            input_tokens AS inputTokens, output_tokens AS outputTokens, reasoning_tokens AS reasoningTokens,
+            cache_creation_tokens AS cacheCreationTokens, cache_read_tokens AS cacheReadTokens,
+            started_at AS startedAt, completed_at AS completedAt, duration_ms AS durationMs, status
+     FROM usage_record
+     WHERE device_id = ? AND started_at >= ? AND started_at < ?
+     ORDER BY started_at ASC`
+  ).all(deviceId, start, start + 86400000).map(rowToRecord);
+}
+
+/** 记录筛选条件 → { whereStr, params }（getRecords 与导出共用同一套条件语义） */
+function buildRecordFilter(filter = {}) {
   const clauses = [];
   const params = [];
   const conds = [
@@ -436,7 +460,11 @@ function getRecords(filter = {}) {
       params.push(val);
     }
   }
-  const whereStr = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+  return { whereStr: clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "", params };
+}
+
+function getRecords(filter = {}) {
+  const { whereStr, params } = buildRecordFilter(filter);
 
   const total = get().prepare(`SELECT COUNT(*) AS c FROM usage_record${whereStr}`).get(...params).c;
 
@@ -446,7 +474,7 @@ function getRecords(filter = {}) {
            input_tokens AS inputTokens, output_tokens AS outputTokens, reasoning_tokens AS reasoningTokens,
            cache_creation_tokens AS cacheCreationTokens, cache_read_tokens AS cacheReadTokens,
            started_at AS startedAt, completed_at AS completedAt, duration_ms AS durationMs, status
-    FROM usage_record${whereStr} ORDER BY started_at DESC LIMIT ? OFFSET ?`;
+    FROM usage_record${whereStr} ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?`;
   const records = get().prepare(dataSql).all(...params, filter.limit ?? 50, filter.offset ?? 0).map(rowToRecord);
 
   return { records, total };
@@ -460,12 +488,8 @@ function fmtLocal(ms) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-function allRecords(from, to) {
-  const clauses = [];
-  const params = [];
-  if (from !== null && from !== undefined) { clauses.push("started_at >= ?"); params.push(from); }
-  if (to !== null && to !== undefined) { clauses.push("started_at <= ?"); params.push(to); }
-  const whereStr = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+function allRecords(filter = {}) {
+  const { whereStr, params } = buildRecordFilter(filter);
   return get().prepare(
     `SELECT id, device_id AS deviceId, device_name AS deviceName, source, provider_id AS providerId,
             model_id AS modelId, variant, task_type AS taskType, session_id AS sessionId, agent, mode,
@@ -476,11 +500,13 @@ function allRecords(from, to) {
   ).all(...params).map(rowToRecord);
 }
 
-function exportCsv(from, to) {
-  const records = allRecords(from, to);
+function exportCsv(filter = {}) {
+  const records = allRecords(filter);
   const esc = (v) => {
-    const s = String(v ?? "");
-    if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+    let s = String(v ?? "");
+    // 防 Excel 公式注入：先加前缀再做引号包裹，确保最终单元格首字符不是 = + - @
+    if (/^[=+\-@]/.test(s)) s = "'" + s;
+    if (/[",\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
     return s;
   };
   const head = "时间,设备,软件源,模型,供应商,输入,输出,推理,缓存命中,缓存写入,状态";
@@ -492,8 +518,48 @@ function exportCsv(from, to) {
   return [head, ...rows].join("\r\n");
 }
 
-function exportJson(from, to) {
-  return JSON.stringify(allRecords(from, to), null, 2);
+function exportJson(filter = {}) {
+  return JSON.stringify(allRecords(filter), null, 2);
+}
+
+/** LIKE 模式转义（配 ESCAPE '\' 使用），防止设备 ID 中的 %/_ 干扰前缀匹配 */
+function escapeLike(s) {
+  return String(s).replace(/[\\%_]/g, "\\$&");
+}
+
+/** 删除某设备的全部本地数据（明细 + 设备元数据 + 增量合并记账），用于退役设备清理 */
+function deleteDeviceData(deviceId) {
+  const db = get();
+  db.exec("BEGIN");
+  try {
+    db.prepare("DELETE FROM usage_record WHERE device_id = ?").run(deviceId);
+    db.prepare("DELETE FROM device_meta WHERE device_id = ?").run(deviceId);
+    db.prepare("DELETE FROM meta WHERE key LIKE ? ESCAPE '\\'").run(escapeLike(`merged:${deviceId}:`) + "%");
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/**
+ * 清空本地缓存：删除全部明细、增量抽取锚点、上传/合并记账与他机设备元数据；
+ * 保留本机 device_id 与 Antigravity 快照基线（snapshot: 清除会导致配额差值重复入账）。
+ * WebDAV 远端数据不动；下次同步自动全量重传/重拉（分片覆盖写与合并均幂等）。
+ */
+function clearLocalCache(localDeviceId) {
+  const db = get();
+  db.exec("BEGIN");
+  try {
+    db.prepare("DELETE FROM usage_record").run();
+    db.prepare("DELETE FROM checkpoint").run();
+    db.prepare("DELETE FROM device_meta WHERE device_id != ?").run(localDeviceId ?? "");
+    db.prepare("DELETE FROM meta WHERE key LIKE 'uploaded:%' OR key LIKE 'merged:%'").run();
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
 }
 
 module.exports = {
@@ -503,9 +569,11 @@ module.exports = {
   getLocalDeviceId, setLocalDeviceId,
   getAnchor, setAnchor,
   upsertDevice,
-  addLog, getLogs, clearLogs,
+  addLog, getLogs, clearLogs, pruneLogs,
   getSummary, getDevices, getDeviceBreakdowns, getTrend, getHeatmap, getAggregate, getRecords,
+  getRecordDays, getRecordsByDay,
   getLastSyncAt,
+  deleteDeviceData, clearLocalCache,
   exportCsv, exportJson,
   todayStartMs,
 };

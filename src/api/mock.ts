@@ -58,7 +58,6 @@ const allRecords = genRecords(240);
 
 function calcTotal(r: any, mode: string): number {
   if (mode === "compact") return r.inputTokens + r.outputTokens;
-  if (mode === "platform") return r.inputTokens + r.outputTokens;
   return r.inputTokens + r.outputTokens + r.reasoningTokens;
 }
 
@@ -80,14 +79,21 @@ const mock = {
                 // { source: "antigravity", enabled: false, dataDir: null },
                 // { source: "antigravity-ide", enabled: false, dataDir: null },
               ],
-              schedule: { hourly: false, hourlyInterval: 1, daily: false, dailyTime: "23:30", autoStart: false, minimizeToTray: true },
+              schedule: { hourly: false, hourlyInterval: 1, daily: false, dailyTime: "23:30", autoStart: false, minimizeToTray: true, notifyOnSuccess: false },
               totalMode: "full",
               theme: "light",
-              portableMode: false,
             });
             break;
           case "save_config": resolve({ ok: true, message: "设置保存成功" }); break;
           case "test_webdav": resolve({ ok: true, message: "连接正常" }); break;
+          case "list_sources": resolve([
+            { id: "zcode", name: "ZCode", enabled: true },
+            { id: "codex", name: "Codex", enabled: false },
+            { id: "dsh", name: "DeepSeek Harness", enabled: false },
+            // 【暂时隐藏 Antigravity 系】
+            // { id: "antigravity", name: "Antigravity", enabled: false },
+            // { id: "antigravity-ide", name: "Antigravity IDE", enabled: false },
+          ]); break;
           case "detect_source": {
             const mockDirs: Record<string, string> = {
               // 【暂时隐藏 Antigravity 系】
@@ -122,7 +128,7 @@ const mock = {
               cacheReadTokens: cacheRead, inputTokens: input,
               outputTokens: output, reasoningTokens: reasoning, cacheCreationTokens: cacheCreate,
               todayInputTokens: Math.round(input * 0.011), todayCacheReadTokens: Math.round(cacheRead * 0.011),
-              deviceCount: localRecs.length ? 1 : 0, recordCount: localRecs.length,
+              recordCount: localRecs.length,
               todayRecordCount: Math.max(0, Math.round(localRecs.length * 0.011)),
               selectedDeviceId: args.deviceId || null,
             });
@@ -217,18 +223,17 @@ const mock = {
             { id: 5, time: Date.now() - 4000000, kind: "merge", level: "ok", message: "合并完成", detail: "按 deviceId:source:记录id 幂等合并" },
           ]); break;
           case "clear_sync_logs": resolve(null); break;
-          case "export_data": resolve({ ok: true, path: "C:\\Users\\YOUR_NAME\\Downloads\\dosage-export.csv", message: "导出成功" }); break;
+          case "export_data": {
+            const ext = args.format === "json" ? "json" : "csv";
+            resolve({ ok: true, path: `C:\\Users\\YOUR_NAME\\Downloads\\dosage-export.${ext}`, message: "导出成功" });
+            break;
+          }
+          case "delete_device": resolve({ ok: true, message: "设备已删除（演示环境）" }); break;
           case "open_data_dir": resolve(null); break;
           case "get_data_dir": resolve("C:\\Users\\YOUR_NAME\\AppData\\Roaming\\DosageSync"); break;
           case "get_app_version": resolve("1.0.0"); break;
-          case "get_model_metas": resolve({
-            "deepseek-v4-pro": { kind: "reasoning", tier: "flagship", providerName: "deepseek" },
-            "GLM-5.3": { kind: "reasoning", tier: "flagship", providerName: "智谱 GLM" },
-            "qwen3.7-max": { kind: "reasoning", tier: "flagship", providerName: "Qwen" },
-            "MiniMax-M3": { kind: "chat", tier: "flagship", providerName: "MiniMax" },
-            "deepseek-v4-flash": { kind: "flash", tier: "flash", providerName: "deepseek" },
-            "GLM-5-Turbo": { kind: "flash", tier: "flash", providerName: "智谱 GLM" },
-          }); break;
+          case "get_is_portable": resolve(false); break;
+          case "reset_local_cache": resolve({ ok: true, message: "本地缓存已清空（演示环境）" }); break;
           default: resolve(null);
         }
       }, 60);

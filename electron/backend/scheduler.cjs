@@ -1,11 +1,21 @@
 // 定时同步调度：每 60s 检查一次，命中 hourly / daily 规则则触发同步
 "use strict";
 const sync = require("./sync.cjs");
+const db = require("./db.cjs");
 
 let timer = null;
 let lastHourlyAt = 0;
 let lastDailyAt = ""; // "YYYY-MM-DD"
 let paused = false;
+
+/** 触发时间持久化到 meta 表：重启后不重置，避免启动即同步/当天 daily 重复补跑 */
+function rememberLast(kind, value) {
+  try {
+    db.setMeta(`sched_last_${kind}`, String(value));
+  } catch {
+    /* 持久化失败仅意味着重启后可能多跑一次，不影响正确性 */
+  }
+}
 
 function setPaused(v) {
   paused = !!v;
@@ -25,6 +35,7 @@ function shouldRun(cfg) {
     const interval = Math.max(1, cfg.schedule.hourlyInterval || 1);
     if (now - lastHourlyAt >= interval * 60 * 60 * 1000) {
       lastHourlyAt = now;
+      rememberLast("hourly", now);
       return true;
     }
   }
@@ -35,8 +46,10 @@ function shouldRun(cfg) {
     if (!Number.isNaN(h) && !Number.isNaN(m)) {
       const d = new Date(now);
       const today = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-      if (today !== lastDailyAt && d.getHours() === h && d.getMinutes() === m) {
+      // 追赶式补跑：错过设定时刻（睡眠/关机/卡顿）后，当天内首次 tick 仍会补跑一次
+      if (today !== lastDailyAt && d.getHours() * 60 + d.getMinutes() >= h * 60 + m) {
         lastDailyAt = today;
+        rememberLast("daily", today);
         return true;
       }
     }
@@ -64,6 +77,15 @@ function tick() {
 
 function start() {
   if (timer) return;
+  // 恢复上次触发时间：重启后接着原节奏调度，而不是立刻补跑
+  try {
+    const h = Number(db.getMeta("sched_last_hourly"));
+    if (Number.isFinite(h) && h > 0) lastHourlyAt = h;
+    const d = db.getMeta("sched_last_daily");
+    if (d) lastDailyAt = d;
+  } catch {
+    /* 读取失败按默认值（首次启动视为从未触发） */
+  }
   timer = setInterval(tick, 60 * 1000);
 }
 
@@ -74,4 +96,4 @@ function stop() {
   }
 }
 
-module.exports = { start, stop, setPaused, isPaused };
+module.exports = { start, stop, setPaused, isPaused, shouldRun };

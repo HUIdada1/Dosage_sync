@@ -71,6 +71,15 @@ function extract(dir, deviceId, deviceName, since) {
 
   const out = [];
   for (const file of findRollouts(dir)) {
+    // rollout 文件为 append-only（会话期间追加、此后不再修改）：mtime 早于回扫窗口起点的
+    // 文件不可能包含 startedAt > since 的事件，直接跳过，避免每次同步全量读盘解析
+    if (since > 0) {
+      try {
+        if (fs.statSync(file).mtimeMs <= since) continue;
+      } catch {
+        /* stat 失败按原逻辑全量解析 */
+      }
+    }
     const events = [];
     let sessionId = sessionIdFromFile(file);
     let model = null;

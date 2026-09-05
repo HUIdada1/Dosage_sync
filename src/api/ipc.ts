@@ -1,6 +1,6 @@
 // IPC 封装：Electron 环境下通过 preload 桥接调用主进程；浏览器环境下回退到本地 mock（便于独立开发/预览 UI）。
 import type {
-  AppConfig, Summary, DeviceMeta, DeviceBreakdown, SyncLog, SyncProgress, SourceHealth, UsageRecord, TotalMode, AggregateRow,
+  AppConfig, Summary, DeviceMeta, DeviceBreakdown, SyncLog, SyncProgress, SourceHealth, SourceInfo, UsageRecord, TotalMode, AggregateRow,
 } from "../types";
 import { mock } from "./mock";
 
@@ -31,6 +31,7 @@ export const saveConfig = (cfg: AppConfig) => call<{ ok: boolean; message: strin
 export const testWebdav = (cfg: AppConfig["webdav"]) => call<{ ok: boolean; message: string; latencyMs?: number }>("test_webdav", { config: { ...cfg } });
 
 // ===== 数据源 =====
+export const listSources = () => call<SourceInfo[]>("list_sources");
 export const detectSource = (source: string) => call<{ ok: boolean; path: string | null; deviceId: string | null }>("detect_source", { source });
 export const healthSource = () => call<SourceHealth[]>("health_source");
 
@@ -55,12 +56,27 @@ export const getSyncLogs = () => call<SyncLog[]>("get_sync_logs");
 export const clearSyncLogs = () => call<void>("clear_sync_logs");
 
 // ===== 导出 =====
-export const exportData = (format: "csv" | "json", from: number | null, to: number | null) =>
-  call<{ ok: boolean; path: string | null; message: string }>("export_data", { format, from, to });
+/** 导出筛选条件：与明细页 getRecords 同一套字段；缺省时导出全部明细 */
+export interface ExportFilter {
+  from: number | null;
+  to: number | null;
+  deviceId: string | null;
+  source: string | null;
+  model: string | null;
+  provider: string | null;
+  status: string | null;
+}
+export const exportData = (format: "csv" | "json", filter?: ExportFilter | null) =>
+  call<{ ok: boolean; path: string | null; message: string }>("export_data", { format, filter: filter ?? null });
+
+// ===== 设备 =====
+export const deleteDevice = (deviceId: string) =>
+  call<{ ok: boolean; message: string }>("delete_device", { deviceId });
 
 // ===== 其它 =====
 export const openDataDir = () => call<void>("open_data_dir");
 export const getDataDir = () => call<string>("get_data_dir");
 export const getAppVersion = () => call<string>("get_app_version");
-export const getModelMetas = () => call<Record<string, { kind: string; tier: string; providerName: string }>>("get_model_metas");
+export const getIsPortable = () => call<boolean>("get_is_portable");
+export const resetLocalCache = () => call<{ ok: boolean; message: string }>("reset_local_cache");
 export const setAutostart = (enabled: boolean) => call<void>("set_autostart", { enabled });

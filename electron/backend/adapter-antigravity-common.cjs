@@ -388,7 +388,6 @@ function makeAdapter(id, name, homeSub, appDataName) {
 
     const models = entries.map((m) => ({ name: m.name, remaining: round4(m.remaining), resetAt: m.resetAt }));
     const pools = groupPools(models);
-    db.setMeta(snapshotKey, JSON.stringify({ at: now, pools }));
 
     const consumptions = computePoolConsumption(prev ? prev.pools : null, pools);
 
@@ -419,6 +418,10 @@ function makeAdapter(id, name, homeSub, appDataName) {
     } else {
       db.addLog("extract", "info", `${name} 配额无新增消耗（${pools.length} 个配额池）`);
     }
+
+    // 快照推进延迟到记录确认落库之后（sync.cjs 调用 onInserted）：中途失败/取消时保持
+    // 旧快照，下次同步基于旧快照重新差值，消耗不会丢失。无新增消耗也要推进（池结构可能已变化）。
+    out.onInserted = () => db.setMeta(snapshotKey, JSON.stringify({ at: now, pools }));
     return out;
   }
 

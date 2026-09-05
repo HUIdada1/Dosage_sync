@@ -4,6 +4,13 @@
 
 const TIMEOUT_MS = 30000;
 
+// 网络抖动/服务端瞬时错误的重试：仅对幂等方法与可重试状态码生效，退避 800ms / 2400ms
+const RETRY_DELAYS_MS = [800, 2400];
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // 标准 PROPFIND 请求体（部分 WebDAV 服务器要求非空 body 才返回 207）
 const PROPFIND_BODY =
   '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>';
@@ -32,23 +39,39 @@ function authHeader(cfg) {
 }
 
 async function request(method, url, cfg, body, headers = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      method,
-      headers: {
-        Authorization: authHeader(cfg),
-        ...(body ? { "Content-Type": "application/octet-stream" } : {}),
-        Depth: "1",
-        ...headers,
-      },
-      body: body || undefined,
-      signal: controller.signal,
-    });
-    return res;
-  } finally {
-    clearTimeout(timer);
+  // 重试仅针对网络层失败与 5xx/429；4xx（除 429）为确定性错误，立即返回交由上层提示
+  for (let attempt = 0; ; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: {
+          Authorization: authHeader(cfg),
+          ...(body ? { "Content-Type": "application/octet-stream" } : {}),
+          Depth: "1",
+          ...headers,
+        },
+        body: body || undefined,
+        signal: controller.signal,
+      });
+      const retryable = res.status >= 500 || res.status === 429;
+      if (retryable && attempt < RETRY_DELAYS_MS.length) {
+        // 消费掉响应体以释放连接，再退避重试
+        try { await res.arrayBuffer(); } catch { /* 忽略 */ }
+        await sleep(RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+      return res;
+    } catch (e) {
+      if (attempt < RETRY_DELAYS_MS.length) {
+        await sleep(RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -131,6 +154,16 @@ async function put(url, cfg, text) {
   }
 }
 
+/** 删除远端文件/目录（WebDAV DELETE 对集合为递归删除）；404 视为已删除（幂等） */
+async function remove(url, cfg) {
+  const res = await request("DELETE", url, cfg);
+  if (res.ok || res.status === 404) return;
+  if (res.status === 401 || res.status === 403) {
+    throw new Error(`DELETE 失败：HTTP ${res.status}，请检查账号删除权限（${url}）`);
+  }
+  throw new Error(`DELETE 失败：HTTP ${res.status}（${url}）`);
+}
+
 /** 确保业务目录存在：从 endpoint 已存在路径之后开始逐级 MKCOL。 */
 async function ensureDir(url, cfg) {
   const u = new URL(url);
@@ -150,6 +183,13 @@ async function ensureDir(url, cfg) {
       throw new Error(`创建目录失败：HTTP ${res.status} ${current}`);
     }
   }
+}
+
+/** http 明文传输提醒（账号密码经 Basic 认证发送，https 之外一律明文） */
+function insecureHint(cfg) {
+  return normalizeEndpoint(cfg.endpoint).toLowerCase().startsWith("http://")
+    ? "；当前使用 http://，账号密码将明文传输，建议改用 https"
+    : "";
 }
 
 /** 测试连接：对根目录 PROPFIND（Depth 0），逐类错误码给出可读提示 */
@@ -173,15 +213,15 @@ async function test(cfg) {
     return { ok: false, message: `无法连接：${msg}`, latencyMs: Date.now() - started };
   }
   if (res.status === 401 || res.status === 403) {
-    return { ok: false, message: `WebDAV 访问被拒绝（HTTP ${res.status}），请检查账号权限和根目录（${Date.now() - started}ms）`, latencyMs: Date.now() - started };
+    return { ok: false, message: `WebDAV 访问被拒绝（HTTP ${res.status}）· ${Date.now() - started}ms，请检查账号密码与账号对根目录的权限`, latencyMs: Date.now() - started };
   }
   if (res.status === 404) {
-    return { ok: true, message: `连接成功 · ${Date.now() - started}ms（目录尚未创建，首次同步将自动创建）`, latencyMs: Date.now() - started };
+    return { ok: true, message: `连接成功 · ${Date.now() - started}ms（目录尚未创建，首次同步将自动创建）${insecureHint(cfg)}`, latencyMs: Date.now() - started };
   }
   if (res.status >= 200 && res.status < 300) {
-    return { ok: true, message: `连接成功 · ${Date.now() - started}ms`, latencyMs: Date.now() - started };
+    return { ok: true, message: `连接成功 · ${Date.now() - started}ms${insecureHint(cfg)}`, latencyMs: Date.now() - started };
   }
   return { ok: false, message: `连接失败：HTTP ${res.status}（${Date.now() - started}ms）`, latencyMs: Date.now() - started };
 }
 
-module.exports = { joinUrl, normalizeEndpoint, list, get, getText, put, ensureDir, test, relPath };
+module.exports = { joinUrl, normalizeEndpoint, list, get, getText, put, remove, ensureDir, test, relPath };

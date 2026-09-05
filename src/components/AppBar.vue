@@ -4,15 +4,7 @@ import { useAppStore } from "../stores/app";
 
 const app = useAppStore();
 
-const sources = [
-  { key: "zcode", label: "ZCode" },
-  { key: "codex", label: "Codex" },
-  { key: "dsh", label: "DeepSeek Harness" },
-  // 【暂时隐藏 Antigravity 系】
-  // { key: "antigravity", label: "Antigravity" },
-  // { key: "antigravity-ide", label: "Antigravity IDE" },
-];
-
+// 来源清单与名称来自后端 list_sources（唯一事实源是适配器），前端不再硬编码
 const lastSyncLabel = computed(() => {
   const t = app.sync.lastSyncAt;
   return t ? new Date(t).toLocaleString("zh-CN", { hour12: false }) : "—";
@@ -23,14 +15,14 @@ const lastSyncLabel = computed(() => {
   <header class="appbar">
     <div class="source-tabs">
       <button
-        v-for="s in sources"
-        :key="s.key"
+        v-for="s in app.sources"
+        :key="s.id"
         class="source-tab"
-        :class="{ active: app.activeSource === s.key }"
-        @click="app.setActiveSource(s.key)"
+        :class="{ active: app.activeSource === s.id }"
+        @click="app.setActiveSource(s.id)"
       >
-        <span class="dot" v-if="app.isSourceEnabled(s.key)"></span>
-        {{ s.label }}
+        <span class="dot" v-if="app.isSourceEnabled(s.id)"></span>
+        {{ s.name }}
       </button>
     </div>
     <div class="spacer"></div>

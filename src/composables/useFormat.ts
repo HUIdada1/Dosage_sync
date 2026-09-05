@@ -41,11 +41,6 @@ export function formatDateTime(ts: number): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-/** 日期字符串 "2026-09-04" → "09-04" */
-export function shortDate(s: string): string {
-  return s.slice(5);
-}
-
 /** 日期字符串 → "9月4日" */
 export function humanDate(s: string): string {
   const [, m, d] = s.split("-");
