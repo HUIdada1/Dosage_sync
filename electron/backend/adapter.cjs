@@ -4,10 +4,11 @@
 const zcode = require("./adapter-zcode.cjs");
 const codex = require("./adapter-codex.cjs");
 const dsh = require("./adapter-dsh.cjs");
-const antigravity = require("./adapter-antigravity.cjs");
-const antigravityIde = require("./adapter-antigravity-ide.cjs");
+// 【暂时隐藏 Antigravity 系】注释掉注册即下线其同步/探测/设置入口，恢复时取消注释即可
+// const antigravity = require("./adapter-antigravity.cjs");
+// const antigravityIde = require("./adapter-antigravity-ide.cjs");
 
-const sources = [zcode, codex, dsh, antigravity, antigravityIde];
+const sources = [zcode, codex, dsh /* , antigravity, antigravityIde */];
 
 function byId(id) {
   return sources.find((s) => s.id === id);

@@ -10,8 +10,9 @@ const defaultConfig: AppConfig = {
     { source: "zcode", enabled: true, dataDir: null },
     { source: "codex", enabled: false, dataDir: null },
     { source: "dsh", enabled: false, dataDir: null },
-    { source: "antigravity", enabled: false, dataDir: null },
-    { source: "antigravity-ide", enabled: false, dataDir: null },
+    // 【暂时隐藏 Antigravity 系】
+    // { source: "antigravity", enabled: false, dataDir: null },
+    // { source: "antigravity-ide", enabled: false, dataDir: null },
   ],
   schedule: { hourly: false, hourlyInterval: 1, daily: false, dailyTime: "23:30", autoStart: false, minimizeToTray: true },
   totalMode: "full",

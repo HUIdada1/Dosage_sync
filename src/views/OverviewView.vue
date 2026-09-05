@@ -50,8 +50,9 @@ const sourceNames: Record<string, string> = {
   zcode: "ZCode",
   codex: "Codex",
   dsh: "DeepSeek Harness",
-  antigravity: "Antigravity",
-  "antigravity-ide": "Antigravity IDE",
+  // 【暂时隐藏 Antigravity 系】
+  // antigravity: "Antigravity",
+  // "antigravity-ide": "Antigravity IDE",
 };
 const activeSourceName = computed(() => sourceNames[app.activeSource] || app.activeSource);
 const activeSourceEnabled = computed(() => app.isSourceEnabled(app.activeSource));

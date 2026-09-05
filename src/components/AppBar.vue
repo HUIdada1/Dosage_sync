@@ -8,8 +8,9 @@ const sources = [
   { key: "zcode", label: "ZCode" },
   { key: "codex", label: "Codex" },
   { key: "dsh", label: "DeepSeek Harness" },
-  { key: "antigravity", label: "Antigravity" },
-  { key: "antigravity-ide", label: "Antigravity IDE" },
+  // 【暂时隐藏 Antigravity 系】
+  // { key: "antigravity", label: "Antigravity" },
+  // { key: "antigravity-ide", label: "Antigravity IDE" },
 ];
 
 const lastSyncLabel = computed(() => {

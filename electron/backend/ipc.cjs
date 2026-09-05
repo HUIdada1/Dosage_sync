@@ -13,8 +13,9 @@ const SOURCE_META = {
   zcode: { name: "ZCode" },
   codex: { name: "Codex" },
   dsh: { name: "DeepSeek Harness" },
-  antigravity: { name: "Antigravity" },
-  "antigravity-ide": { name: "Antigravity IDE" },
+  // 【暂时隐藏 Antigravity 系】
+  // antigravity: { name: "Antigravity" },
+  // "antigravity-ide": { name: "Antigravity IDE" },
 };
 
 /** 注册所有 IPC handler。ctx = { ipcMain, app, shell } */
