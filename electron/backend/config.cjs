@@ -136,6 +136,13 @@ function defaultConfig() {
     },
     totalMode: "full",
     theme: "light",
+    // 计费设置（费用页显示 / 计费规则页维护；价格表数据在 SQLite，经 WebDAV 多设备同步）
+    billing: {
+      enabled: false, // 默认关闭：关闭时隐藏费用页入口与所有费用元素，记录与同步不受影响
+      displayCurrency: "CNY",
+      usdToCny: 7.2,
+      importProxy: "", // 价格源导入代理（留空=系统代理/直连）
+    },
   };
 }
 
@@ -184,6 +191,14 @@ function loadConfig() {
     if (merged.webdav) merged.webdav.password = decryptPassword(merged.webdav.password);
     // 总量口径归一化：platform 选项从未实现（等效 compact），已从 UI 移除，旧配置值回退为 compact
     if (merged.totalMode !== "full" && merged.totalMode !== "compact") merged.totalMode = "compact";
+    // 计费配置归一化：币种只允许 CNY/USD，汇率必须为正数
+    if (merged.billing) {
+      if (merged.billing.displayCurrency !== "USD") merged.billing.displayCurrency = "CNY";
+      const rate = Number(merged.billing.usdToCny);
+      merged.billing.usdToCny = isFinite(rate) && rate > 0 ? rate : 7.2;
+      if (typeof merged.billing.importProxy !== "string") merged.billing.importProxy = "";
+      merged.billing.enabled = !!merged.billing.enabled;
+    }
     return merged;
   } catch (e) {
     // 配置损坏时留档（.bak）并回退默认，避免应用无法启动

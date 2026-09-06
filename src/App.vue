@@ -6,6 +6,8 @@ import Sidebar from "./components/Sidebar.vue";
 import AppBar from "./components/AppBar.vue";
 import OverviewView from "./views/OverviewView.vue";
 import DetailView from "./views/DetailView.vue";
+import CostsView from "./views/CostsView.vue";
+import BillingRulesView from "./views/BillingRulesView.vue";
 import LogView from "./views/LogView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import SyncDialog from "./components/SyncDialog.vue";
@@ -33,6 +35,8 @@ onMounted(() => {
       <main class="content">
         <OverviewView v-show="app.activePage === 'overview'" :class="{ 'page-anim': app.activePage === 'overview' }" />
         <DetailView v-show="app.activePage === 'detail'" :class="{ 'page-anim': app.activePage === 'detail' }" />
+        <CostsView v-show="app.activePage === 'costs'" :class="{ 'page-anim': app.activePage === 'costs' }" />
+        <BillingRulesView v-show="app.activePage === 'billing'" :class="{ 'page-anim': app.activePage === 'billing' }" />
         <LogView v-show="app.activePage === 'log'" :class="{ 'page-anim': app.activePage === 'log' }" />
         <SettingsView v-show="app.activePage === 'settings'" :class="{ 'page-anim': app.activePage === 'settings' }" />
       </main>

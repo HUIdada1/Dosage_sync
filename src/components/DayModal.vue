@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { humanDate, formatInteger } from "../composables/useFormat";
+import { humanDate, formatInteger, formatCost } from "../composables/useFormat";
+import { useAppStore } from "../stores/app";
 
-const props = defineProps<{ show: boolean; date: string; data: { date: string; total: number }[] }>();
+const props = defineProps<{ show: boolean; date: string; data: { date: string; total: number; cost?: number }[] }>();
 defineEmits<{ (e: "close"): void }>();
 
-const total = computed(() => {
-  const d = props.data.find((x) => x.date === props.date);
-  return d ? d.total : 0;
-});
+const app = useAppStore();
+
+const day = computed(() => props.data.find((x) => x.date === props.date));
+const total = computed(() => (day.value ? day.value.total : 0));
+const cost = computed(() => (day.value && day.value.cost != null ? day.value.cost : null));
 </script>
 
 <template>
@@ -24,6 +26,10 @@ const total = computed(() => {
         <div class="total-row">
           <span class="big mono">{{ formatInteger(total) }}</span>
           <span class="sw">当日总量</span>
+        </div>
+        <div v-if="app.config.billing?.enabled && cost !== null" class="total-row" style="margin-top: 8px">
+          <span class="big mono" style="font-size: 18px">{{ formatCost(cost) }}</span>
+          <span class="sw">当日费用</span>
         </div>
         <p class="m-hint">当日输入 / 输出 / 推理的分项构成，请在「用量明细」页按日期筛选查看。</p>
       </div>

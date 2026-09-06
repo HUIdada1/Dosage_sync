@@ -10,7 +10,7 @@ let _db = null;
 
 // 当前 schema 版本。旧库（user_version=0）首次打开时迁移到该版本；
 // 未来变更表结构时：SCHEMA_VERSION+1，并在 init() 的迁移块中追加对应 ALTER/重建步骤
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /** 获取（惰性打开）单例连接 */
 function get() {
@@ -77,15 +77,105 @@ function init(db) {
         message TEXT NOT NULL,
         detail TEXT
     );
+
+    -- 模型价格（时段版本化）：改价 = 关闭现行段 + 插入新段，历史段永久保留
+    CREATE TABLE IF NOT EXISTS model_price (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider_id TEXT,                       -- NULL = 不限供应商（通配）
+        model_id TEXT NOT NULL,
+        input_per_m REAL NOT NULL DEFAULT 0,    -- 单价：元（$）/ 百万 token
+        output_per_m REAL NOT NULL DEFAULT 0,
+        cache_read_per_m REAL NOT NULL DEFAULT 0,
+        cache_write_per_m REAL NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'CNY',
+        effective_from INTEGER NOT NULL,        -- epoch ms（含），生效起
+        effective_to INTEGER,                   -- epoch ms（不含）；NULL = 至今
+        updated_at INTEGER NOT NULL,
+        updated_by TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_price_lookup ON model_price(model_id, effective_from);
+    -- 防重叠时段兜底（provider NULL 经 COALESCE 归一后才能进唯一索引）
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_price_period ON model_price(COALESCE(provider_id, ''), model_id, effective_from);
+
+    -- 记录成本视图：按「记录发生时刻生效的最优匹配价」动态计费（价格修改后历史自动重算）
+    -- 口径：净输入×输入价 + 缓存命中×缓存读价 + 缓存写入×缓存写价 + (输出+推理)×输出价
+    -- 适配器口径锚点：input_tokens 含 cache_read_tokens（README 已实测），故净输入需相减
+    CREATE VIEW IF NOT EXISTS v_record_cost AS
+    SELECT r.*,
+      ( COALESCE(mp.input_per_m, 0)      * (r.input_tokens - r.cache_read_tokens)
+      + COALESCE(mp.cache_read_per_m, 0) * r.cache_read_tokens
+      + COALESCE(mp.cache_write_per_m, 0)* r.cache_creation_tokens
+      + COALESCE(mp.output_per_m, 0)     * (r.output_tokens + r.reasoning_tokens)
+      ) / 1000000.0 AS cost_native,
+      mp.currency AS cost_currency,
+      mp.id AS price_id
+    FROM usage_record r
+    LEFT JOIN model_price mp ON mp.id = (
+      SELECT p.id FROM model_price p
+      WHERE p.model_id = r.model_id
+        AND (p.provider_id IS NULL OR p.provider_id = r.provider_id)
+        AND p.effective_from <= r.started_at
+        AND (p.effective_to IS NULL OR p.effective_to > r.started_at)
+      ORDER BY (p.provider_id IS NOT NULL) DESC, p.effective_from DESC
+      LIMIT 1
+    );
   `);
 
   // schema 版本迁移：按版本逐级执行，PRAGMA user_version 不可参数化故用常量拼接
   const row = db.prepare("PRAGMA user_version").get();
   const current = row && Number(row.user_version) ? Number(row.user_version) : 0;
   if (current < SCHEMA_VERSION) {
-    // 0 → 1：仅把既有表/索引纳入版本管理，无数据变更；未来加列示例：
-    // if (current < 2) db.exec("ALTER TABLE usage_record ADD COLUMN ...");
+    // 0 → 1：仅把既有表/索引纳入版本管理，无数据变更
+    // 1 → 2：新增计费（model_price / v_record_cost）。价格表为空时写入内置默认价格，
+    //        让用户开启计费后立即可见全部历史费用；仅迁移时种一次，之后删光不复活。
+    if (current < 2) {
+      const n = db.prepare("SELECT COUNT(*) AS c FROM model_price").get().c;
+      if (!n) seedDefaultPrices(db);
+    }
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  }
+}
+
+// ===== 内置默认价格 =====
+// 2026-09 整理的参考价（元（$）/ 百万 token），覆盖本机已出现的主要模型；
+// provider 通配（NULL），用户可随时改价/删除，改为精确供应商价后通配行即被覆盖。
+// codex-auto-review 为 Codex 内置评审能力，订阅内不单独计费，配 0 价避免误报「未配置」。
+const DEFAULT_PRICES = [
+  ["deepseek-v4-pro", 2, 8, 0.4],
+  ["deepseek-v4-flash", 1, 4, 0.2],
+  ["glm-5.3", 2, 8, 0.4],
+  ["glm-5.3-flash", 1, 4, 0.2],
+  ["glm-5.2", 4, 16, 0.8],
+  ["glm-5-turbo", 1, 4, 0.2],
+  ["glm-4.5-fp8", 1, 4, 0.2],
+  ["kimi-k3", 4, 16, 0.8],
+  ["qwen3.7-max", 2.4, 9.6, 0.5],
+  ["qwen3.7-max-preview", 2.4, 9.6, 0.5],
+  ["qwen3.7-flash", 0.3, 1.2, 0.1],
+  ["qwen3.5-ocr", 0.5, 2, 0.1],
+  ["minimax-m3", 1, 4, 0.2],
+  ["minimax-m2.7", 1, 4, 0.2],
+  ["dots3-note-prev", 0.5, 2, 0.1],
+  ["ox-alpha", 3, 15, 0.3, "USD"],
+  ["gpt-5.6-sol", 2.5, 10, 1.25, "USD"],
+  ["gpt-5.5", 1.25, 10, 0.6, "USD"],
+  ["gpt-5.4", 1.25, 10, 0.6, "USD"],
+  ["codex-auto-review", 0, 0, 0],
+];
+
+/** 写入内置默认价格（仅建库/迁移且价格表为空时调用），effective_from=0 使全部历史立即可计价 */
+function seedDefaultPrices(db) {
+  const stmt = db.prepare(
+    "INSERT INTO model_price (provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, updated_at, updated_by) VALUES (NULL,?,?,?,?,0,?,0,?,'内置默认')"
+  );
+  const now = Date.now();
+  db.exec("BEGIN");
+  try {
+    for (const [model, i, o, cr, cur] of DEFAULT_PRICES) stmt.run(model, i, o, cr, cur || "CNY", now);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
   }
 }
 
@@ -194,6 +284,35 @@ function pruneLogs(keep = 1000) {
 
 // ===== 聚合查询 =====
 
+// ---- 计费辅助 ----
+// 显示币种与汇率由 ipc 层在加载/保存配置时注入（setBillingFx），
+// 换算在 JS 层完成而非 SQL：汇率修改后所有查询即时生效，无需重建视图。
+const billingFx = { displayCurrency: "CNY", usdToCny: 7.2 };
+
+function setBillingFx(displayCurrency, usdToCny) {
+  billingFx.displayCurrency = displayCurrency === "USD" ? "USD" : "CNY";
+  const r = Number(usdToCny);
+  billingFx.usdToCny = isFinite(r) && r > 0 ? r : 7.2;
+}
+
+/** 原生币种成本 → 显示币种成本 */
+function toDisplay(costNative, currency) {
+  if (!currency || currency === billingFx.displayCurrency) return costNative;
+  if (currency === "USD" && billingFx.displayCurrency === "CNY") return costNative * billingFx.usdToCny;
+  if (currency === "CNY" && billingFx.displayCurrency === "USD") {
+    return billingFx.usdToCny > 0 ? costNative / billingFx.usdToCny : costNative;
+  }
+  return costNative;
+}
+
+/** GROUP BY cost_currency 的聚合行 → 显示币种合计 */
+function sumCostByCurrency(rows) {
+  return rows.reduce((a, r) => a + toDisplay(r.s, r.cur), 0);
+}
+
+// Antigravity 系记录的数值是配额百分比点而非 token，不参与任何费用聚合（明细中照常展示）
+const QUOTA_SOURCES_SQL = "source NOT IN ('antigravity','antigravity-ide')";
+
 function nowMs() {
   return Date.now();
 }
@@ -207,6 +326,142 @@ function todayStartMs() {
 /** 口径后缀：完整口径额外加 reasoning_tokens */
 function extraExpr(mode) {
   return mode === "full" ? " + reasoning_tokens" : "";
+}
+
+// ---- 模型价格 CRUD ----
+
+const num0 = (v) => {
+  const n = Number(v);
+  return isFinite(n) && n >= 0 ? n : 0;
+};
+
+/**
+ * 保存价格：与 [from, ∞) 重叠的既有段，起点更晚的直接删除（覆盖重复配置/导入），
+ * 起点更早的把终点收口到 from；历史段（终点 ≤ from）不动。事务内完成，时段永不重叠。
+ */
+function savePrice(entry, updatedBy = "") {
+  const db = get();
+  const modelId = String(entry.modelId || "").trim();
+  if (!modelId) throw new Error("模型 ID 不能为空");
+  const from = Math.max(0, Math.floor(Number(entry.effectiveFrom) || 0));
+  const providerId = entry.providerId ? String(entry.providerId) : null;
+  const currency = entry.currency === "USD" ? "USD" : "CNY";
+  db.exec("BEGIN");
+  try {
+    db.prepare(
+      "DELETE FROM model_price WHERE model_id = ? AND COALESCE(provider_id, '') = COALESCE(?, '') AND effective_from >= ?"
+    ).run(modelId, providerId, from);
+    db.prepare(
+      "UPDATE model_price SET effective_to = ? WHERE model_id = ? AND COALESCE(provider_id, '') = COALESCE(?, '') AND effective_from < ? AND (effective_to IS NULL OR effective_to > ?)"
+    ).run(from, modelId, providerId, from, from);
+    db.prepare(
+      "INSERT INTO model_price (provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by) VALUES (?,?,?,?,?,?,?,?,NULL,?,?)"
+    ).run(providerId, modelId, num0(entry.inputPerM), num0(entry.outputPerM), num0(entry.cacheReadPerM), num0(entry.cacheWritePerM), currency, from, Date.now(), updatedBy);
+    // 计费价格 LWW 时钟（与行内 updated_at 解耦：删除操作也要推进时钟，否则删光后被远端旧价覆盖）
+    setMeta("prices_local_updated", String(Date.now()));
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** 删除某模型（含供应商维度）的全部价格版本 */
+function deleteModelPrices(providerId, modelId) {
+  get().prepare(
+    "DELETE FROM model_price WHERE model_id = ? AND COALESCE(provider_id, '') = COALESCE(?, '')"
+  ).run(modelId, providerId || null);
+  setMeta("prices_local_updated", String(Date.now()));
+}
+
+function priceRow(row) {
+  return {
+    id: row.id,
+    providerId: row.provider_id,
+    modelId: row.model_id,
+    inputPerM: row.input_per_m,
+    outputPerM: row.output_per_m,
+    cacheReadPerM: row.cache_read_per_m,
+    cacheWritePerM: row.cache_write_per_m,
+    currency: row.currency,
+    effectiveFrom: row.effective_from,
+    effectiveTo: row.effective_to ?? null,
+    updatedAt: row.updated_at,
+    updatedBy: row.updated_by,
+  };
+}
+
+/** 全部价格版本（价格历史抽屉 / WebDAV 同步导出用） */
+function listAllPrices() {
+  return get().prepare(
+    "SELECT id, provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by FROM model_price ORDER BY model_id, COALESCE(provider_id,''), effective_from"
+  ).all().map(priceRow);
+}
+
+/** 每个模型（+供应商维度）的最新价格段（价格表页展示），附版本数与是否生效中 */
+function listCurrentPrices() {
+  const now = nowMs();
+  return get().prepare(
+    `SELECT p.*, v.cnt AS versions FROM model_price p
+     JOIN (SELECT COALESCE(provider_id,'') AS pv, model_id AS m, MAX(effective_from) AS mf FROM model_price GROUP BY pv, m) x
+       ON COALESCE(p.provider_id,'') = x.pv AND p.model_id = x.m AND p.effective_from = x.mf
+     JOIN (SELECT COALESCE(provider_id,'') AS pv, model_id AS m, COUNT(*) AS cnt FROM model_price GROUP BY pv, m) v
+       ON COALESCE(p.provider_id,'') = v.pv AND p.model_id = v.m
+     ORDER BY p.model_id, COALESCE(p.provider_id,'')`
+  ).all().map((row) => ({
+    ...priceRow(row),
+    versions: row.versions,
+    active: row.effective_from <= now && (row.effective_to == null || row.effective_to > now),
+  }));
+}
+
+/** 某模型的全部价格版本（历史时间线，时间倒序） */
+function listPriceVersions(providerId, modelId) {
+  return get().prepare(
+    "SELECT id, provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by FROM model_price WHERE model_id = ? AND COALESCE(provider_id,'') = COALESCE(?, '') ORDER BY effective_from DESC"
+  ).all(modelId, providerId || null).map(priceRow);
+}
+
+/** 扫描无价格且有 token 消耗的模型（费用页提醒 / 计费规则页「从用量生成草稿」） */
+function listUnpricedModels(source = null) {
+  return get().prepare(
+    `SELECT r.provider_id AS providerId, r.model_id AS modelId, COUNT(*) AS records,
+            COALESCE(SUM(r.input_tokens + r.output_tokens + r.reasoning_tokens), 0) AS tokens,
+            MIN(r.started_at) AS firstSeen
+     FROM v_record_cost r
+     WHERE r.price_id IS NULL AND (r.input_tokens + r.output_tokens + r.reasoning_tokens) > 0
+       AND ${QUOTA_SOURCES_SQL} ${source ? "AND r.source = ?" : ""}
+     GROUP BY r.provider_id, r.model_id ORDER BY tokens DESC`
+  ).all(...(source ? [source] : []));
+}
+
+/** 价格表整体替换（WebDAV 同步远端更新时用）；clockMs 为远端时钟，保留它防止下载后再回传的乒乓 */
+function replacePrices(prices, clockMs) {
+  const db = get();
+  db.exec("BEGIN");
+  try {
+    db.prepare("DELETE FROM model_price").run();
+    const stmt = db.prepare(
+      "INSERT INTO model_price (provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+    );
+    for (const p of Array.isArray(prices) ? prices : []) {
+      if (!p || typeof p.modelId !== "string" || !p.modelId) continue;
+      stmt.run(
+        p.providerId ?? null, p.modelId,
+        num0(p.inputPerM), num0(p.outputPerM), num0(p.cacheReadPerM), num0(p.cacheWritePerM),
+        p.currency === "USD" ? "USD" : "CNY",
+        Math.max(0, Math.floor(Number(p.effectiveFrom) || 0)),
+        p.effectiveTo == null ? null : Number(p.effectiveTo) || null,
+        Number(p.updatedAt) || Date.now(),
+        typeof p.updatedBy === "string" ? p.updatedBy : ""
+      );
+    }
+    setMeta("prices_local_updated", String(Math.floor(Number(clockMs) || Date.now())));
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
 }
 
 function recordScope(source = null, deviceId = null) {
@@ -227,6 +482,11 @@ function getSummary(mode, targetDeviceId = null, source = null) {
   const selectedScope = recordScope(source, targetDeviceId);
 
   const t0 = todayStartMs();
+  const now = new Date();
+  // 本月 1 日 / 上月 1 日 / 上月同日零点（本地时区）：本月费用 + 较上月同期
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime();
+  const prevMonthSameDay = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()).getTime();
   const todayScope = {
     clauses: [...selectedScope.clauses, "started_at >= ?"],
     params: [...selectedScope.params, t0],
@@ -247,6 +507,32 @@ function getSummary(mode, targetDeviceId = null, source = null) {
      FROM usage_record${whereSql(selectedScope.clauses)}`
   ).get(...selectedScope.params);
 
+  // 费用聚合：按币种分组求和后在 JS 换算为显示币种（汇率修改即时生效）
+  const costWindows = [
+    ["totalCost", totalRow.c > 0 ? [...selectedScope.clauses] : null, [...selectedScope.params]],
+    ["todayCost", todayScope.clauses, todayScope.params],
+    ["monthCost", [...selectedScope.clauses, "started_at >= ?"], [...selectedScope.params, monthStart]],
+    ["monthCostPrev", [...selectedScope.clauses, "started_at >= ? AND started_at < ?"], [...selectedScope.params, prevMonthStart, prevMonthSameDay]],
+  ];
+  const costs = {};
+  for (const [key, clauses, params] of costWindows) {
+    if (!clauses) { costs[key] = 0; continue; }
+    const scopeSql = clauses.length ? " AND " + clauses.join(" AND ") : "";
+    const rows = db.prepare(
+      `SELECT cost_currency AS cur, SUM(cost_native) AS s FROM v_record_cost WHERE ${QUOTA_SOURCES_SQL}${scopeSql} GROUP BY cur`
+    ).all(...params);
+    costs[key] = sumCostByCurrency(rows);
+  }
+  // 未配置价格但有 token 消耗的记录（跨全部时间）
+  const unpriced = db.prepare(
+    `SELECT COUNT(*) AS c,
+            COALESCE(SUM(input_tokens + output_tokens + reasoning_tokens), 0) AS t,
+            COUNT(DISTINCT model_id || '|' || provider_id) AS m
+     FROM v_record_cost
+     WHERE price_id IS NULL AND (input_tokens + output_tokens + reasoning_tokens) > 0
+       AND ${QUOTA_SOURCES_SQL}${selectedScope.clauses.length ? " AND " + selectedScope.clauses.join(" AND ") : ""}`
+  ).get(...selectedScope.params);
+
   const cacheHitRate = b.i > 0 ? b.cr / b.i : 0;
   const todayCacheHitRate = td.i > 0 ? td.cr / td.i : 0;
 
@@ -264,6 +550,13 @@ function getSummary(mode, targetDeviceId = null, source = null) {
     todayCacheReadTokens: td.cr,
     todayRecordCount: td.c,
     recordCount: totalRow.c,
+    totalCost: costs.totalCost,
+    todayCost: costs.todayCost,
+    monthCost: costs.monthCost,
+    monthCostPrev: costs.monthCostPrev,
+    unpricedRecords: unpriced.c,
+    unpricedTokens: unpriced.t,
+    unpricedModels: unpriced.m,
   };
 }
 
@@ -309,6 +602,21 @@ function getDeviceBreakdowns(localDeviceId, mode, targetDeviceId = null, source 
      ${filter}
      GROUP BY d.device_id, d.device_name ORDER BY totalTokens DESC, d.device_name ASC`
   ).all(...params);
+  // 各设备费用（显示币种；Antigravity 配额点不计）
+  const costClauses = [
+    ...recordScope(source, targetDeviceId).clauses,
+  ];
+  const costParams = recordScope(source, targetDeviceId).params;
+  const costScope = costClauses.length ? " AND " + costClauses.join(" AND ") : "";
+  const costRows = get().prepare(
+    `SELECT device_id AS did, cost_currency AS cur, SUM(cost_native) AS s
+     FROM v_record_cost WHERE ${QUOTA_SOURCES_SQL}${costScope}
+     GROUP BY device_id, cur`
+  ).all(...costParams);
+  const costByDevice = new Map();
+  for (const r of costRows) {
+    costByDevice.set(r.did, (costByDevice.get(r.did) || 0) + toDisplay(r.s, r.cur));
+  }
   return rows.filter((r) => r.recordCount > 0).map((r) => ({
     deviceId: r.deviceId,
     deviceName: r.deviceName,
@@ -320,6 +628,7 @@ function getDeviceBreakdowns(localDeviceId, mode, targetDeviceId = null, source 
     cacheReadTokens: r.cacheReadTokens,
     cacheCreationTokens: r.cacheCreationTokens,
     recordCount: r.recordCount,
+    cost: costByDevice.get(r.deviceId) || 0,
   }));
 }
 
@@ -340,9 +649,25 @@ function getTrend(mode, days, targetDeviceId = null, source = null) {
             SUM(input_tokens + output_tokens${extra}) AS total
      FROM usage_record${whereSql(clauses)} GROUP BY date, model ORDER BY date ASC`
   ).all(...params);
+  // 每日费用（按币种分组后 JS 换算；与 token 同一日期口径，Antigravity 配额点不计）
+  const costScope = clauses.length ? " AND " + clauses.join(" AND ") : "";
+  const costRows = get().prepare(
+    `SELECT date(started_at/1000, 'unixepoch', 'localtime') AS date, cost_currency AS cur, SUM(cost_native) AS s
+     FROM v_record_cost WHERE ${QUOTA_SOURCES_SQL}${costScope}
+     GROUP BY date, cur`
+  ).all(...params);
+  const costByDate = new Map();
+  for (const r of costRows) {
+    if (!costByDate.has(r.date)) costByDate.set(r.date, []);
+    costByDate.get(r.date).push(r);
+  }
   const byDate = new Map();
   for (const r of models) { if (!byDate.has(r.date)) byDate.set(r.date, {}); byDate.get(r.date)[r.model || "未知模型"] = r.total; }
-  return rows.map((r) => ({ ...r, models: byDate.get(r.date) || {} }));
+  return rows.map((r) => ({
+    ...r,
+    cost: sumCostByCurrency(costByDate.get(r.date) || []),
+    models: byDate.get(r.date) || {},
+  }));
 }
 
 function getHeatmap(mode, startDate, endDate, targetDeviceId = null, source = null) {
@@ -354,13 +679,26 @@ function getHeatmap(mode, startDate, endDate, targetDeviceId = null, source = nu
     ...scope.clauses,
   ];
   const params = [startDate, endDate, ...scope.params];
-  return get().prepare(
+  const rows = get().prepare(
     `SELECT date(started_at/1000, 'unixepoch', 'localtime') AS date,
             SUM(input_tokens + output_tokens${extra}) AS total
      FROM usage_record
      ${whereSql(clauses)}
      GROUP BY date ORDER BY date ASC`
   ).all(...params);
+  // 每日费用（DayModal 展示；Antigravity 配额点不计）
+  const costScope = clauses.length ? " AND " + clauses.join(" AND ") : "";
+  const costRows = get().prepare(
+    `SELECT date(started_at/1000, 'unixepoch', 'localtime') AS date, cost_currency AS cur, SUM(cost_native) AS s
+     FROM v_record_cost WHERE ${QUOTA_SOURCES_SQL}${costScope}
+     GROUP BY date, cur`
+  ).all(...params);
+  const costByDate = new Map();
+  for (const r of costRows) {
+    if (!costByDate.has(r.date)) costByDate.set(r.date, []);
+    costByDate.get(r.date).push(r);
+  }
+  return rows.map((r) => ({ ...r, cost: sumCostByCurrency(costByDate.get(r.date) || []) }));
 }
 
 function getAggregate(mode, dim, from, to, source = null) {
@@ -377,19 +715,40 @@ function getAggregate(mode, dim, from, to, source = null) {
        ${source ? "AND source = ?" : ""}
      GROUP BY k ORDER BY total DESC`
   ).all(from, from, to, to, ...(source ? [source] : []));
-  return rows.map((r) => ({
-    key: r.k,
-    inputTokens: r.inputTokens,
-    outputTokens: r.outputTokens,
-    reasoningTokens: r.reasoningTokens,
-    cacheReadTokens: r.cacheReadTokens,
-    cacheCreationTokens: r.cacheCreationTokens,
-    totalTokens: r.total,
-    count: r.count,
-  }));
+  // 各维度费用（按币种分组换算）与未配置计数
+  const costRows = get().prepare(
+    `SELECT ${dimCol} AS k, cost_currency AS cur, SUM(cost_native) AS s,
+            SUM(CASE WHEN price_id IS NULL AND (input_tokens + output_tokens + reasoning_tokens) > 0 THEN 1 ELSE 0 END) AS unpriced
+     FROM v_record_cost
+     WHERE ${QUOTA_SOURCES_SQL} AND (? IS NULL OR started_at >= ?) AND (? IS NULL OR started_at <= ?)
+       ${source ? "AND source = ?" : ""}
+     GROUP BY k, cur`
+  ).all(from, from, to, to, ...(source ? [source] : []));
+  const costByKey = new Map();
+  for (const r of costRows) {
+    if (!costByKey.has(r.k)) costByKey.set(r.k, { s: 0, unpriced: 0 });
+    const e = costByKey.get(r.k);
+    e.s += toDisplay(r.s, r.cur);
+    e.unpriced += r.unpriced;
+  }
+  return rows.map((r) => {
+    const e = costByKey.get(r.k) || { s: 0, unpriced: 0 };
+    return {
+      key: r.k,
+      inputTokens: r.inputTokens,
+      outputTokens: r.outputTokens,
+      reasoningTokens: r.reasoningTokens,
+      cacheReadTokens: r.cacheReadTokens,
+      cacheCreationTokens: r.cacheCreationTokens,
+      totalTokens: r.total,
+      count: r.count,
+      cost: e.s,
+      unpricedRecords: e.unpriced,
+    };
+  });
 }
 
-/** 行 → UsageRecord（camelCase） */
+/** 行 → UsageRecord（camelCase）；cost* 字段仅来自 v_record_cost 的查询（getRecordsByDay 无此列，导出 undefined） */
 function rowToRecord(row) {
   return {
     id: row.id,
@@ -412,6 +771,10 @@ function rowToRecord(row) {
     completedAt: row.completedAt ?? undefined,
     durationMs: row.durationMs ?? undefined,
     status: row.status,
+    costNative: row.costNative ?? undefined,
+    costCurrency: row.costCurrency ?? undefined,
+    costDisplay: row.costDisplay ?? undefined,
+    priced: row.priced === undefined ? undefined : !!row.priced,
   };
 }
 
@@ -463,19 +826,30 @@ function buildRecordFilter(filter = {}) {
   return { whereStr: clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "", params };
 }
 
+// 明细页查询列：在原始记录列上追加按记录计价的费用（price_id 为空即未配置价格）；
+// costDisplay 换算在 JS 层用 toDisplay 完成（与聚合同一换算来源）
+const RECORD_SELECT = `
+    SELECT id, device_id AS deviceId, device_name AS deviceName, source, provider_id AS providerId,
+           model_id AS modelId, variant, task_type AS taskType, session_id AS sessionId, agent, mode,
+           input_tokens AS inputTokens, output_tokens AS outputTokens, reasoning_tokens AS reasoningTokens,
+           cache_creation_tokens AS cacheCreationTokens, cache_read_tokens AS cacheReadTokens,
+           started_at AS startedAt, completed_at AS completedAt, duration_ms AS durationMs, status,
+           cost_native AS costNative, cost_currency AS costCurrency,
+           (price_id IS NOT NULL) AS priced
+    FROM v_record_cost`;
+
 function getRecords(filter = {}) {
   const { whereStr, params } = buildRecordFilter(filter);
 
   const total = get().prepare(`SELECT COUNT(*) AS c FROM usage_record${whereStr}`).get(...params).c;
 
-  const dataSql = `
-    SELECT id, device_id AS deviceId, device_name AS deviceName, source, provider_id AS providerId,
-           model_id AS modelId, variant, task_type AS taskType, session_id AS sessionId, agent, mode,
-           input_tokens AS inputTokens, output_tokens AS outputTokens, reasoning_tokens AS reasoningTokens,
-           cache_creation_tokens AS cacheCreationTokens, cache_read_tokens AS cacheReadTokens,
-           started_at AS startedAt, completed_at AS completedAt, duration_ms AS durationMs, status
-    FROM usage_record${whereStr} ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?`;
-  const records = get().prepare(dataSql).all(...params, filter.limit ?? 50, filter.offset ?? 0).map(rowToRecord);
+  const dataSql = `${RECORD_SELECT}${whereStr} ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?`;
+  const records = get().prepare(dataSql).all(...params, filter.limit ?? 50, filter.offset ?? 0)
+    .map(rowToRecord)
+    .map((r) => {
+      if (r.costNative != null && r.costCurrency) r.costDisplay = toDisplay(r.costNative, r.costCurrency);
+      return r;
+    });
 
   return { records, total };
 }
@@ -490,14 +864,13 @@ function fmtLocal(ms) {
 
 function allRecords(filter = {}) {
   const { whereStr, params } = buildRecordFilter(filter);
-  return get().prepare(
-    `SELECT id, device_id AS deviceId, device_name AS deviceName, source, provider_id AS providerId,
-            model_id AS modelId, variant, task_type AS taskType, session_id AS sessionId, agent, mode,
-            input_tokens AS inputTokens, output_tokens AS outputTokens, reasoning_tokens AS reasoningTokens,
-            cache_creation_tokens AS cacheCreationTokens, cache_read_tokens AS cacheReadTokens,
-            started_at AS startedAt, completed_at AS completedAt, duration_ms AS durationMs, status
-     FROM usage_record${whereStr} ORDER BY started_at ASC`
-  ).all(...params).map(rowToRecord);
+  return get().prepare(`${RECORD_SELECT}${whereStr} ORDER BY started_at ASC`)
+    .all(...params)
+    .map(rowToRecord)
+    .map((r) => {
+      if (r.costNative != null && r.costCurrency) r.costDisplay = toDisplay(r.costNative, r.costCurrency);
+      return r;
+    });
 }
 
 function exportCsv(filter = {}) {
@@ -509,10 +882,12 @@ function exportCsv(filter = {}) {
     if (/[",\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
     return s;
   };
-  const head = "时间,设备,软件源,模型,供应商,输入,输出,推理,缓存命中,缓存写入,状态";
+  // 费用列按显示币种保留 6 位小数（单条记录费用常为小额，4 位以内会大量截断为 0）
+  const head = "时间,设备,软件源,模型,供应商,输入,输出,推理,缓存命中,缓存写入,状态,费用";
   const rows = records.map((r) =>
     [fmtLocal(r.startedAt), r.deviceName, r.source, r.modelId, r.providerId,
-     r.inputTokens, r.outputTokens, r.reasoningTokens, r.cacheReadTokens, r.cacheCreationTokens, r.status]
+     r.inputTokens, r.outputTokens, r.reasoningTokens, r.cacheReadTokens, r.cacheCreationTokens, r.status,
+     r.priced ? (r.costDisplay ?? 0).toFixed(6) : ""]
       .map(esc).join(",")
   );
   return [head, ...rows].join("\r\n");
@@ -576,4 +951,9 @@ module.exports = {
   deleteDeviceData, clearLocalCache,
   exportCsv, exportJson,
   todayStartMs,
+  // 计费
+  setBillingFx,
+  savePrice, deleteModelPrices,
+  listAllPrices, listCurrentPrices, listPriceVersions, listUnpricedModels,
+  replacePrices,
 };

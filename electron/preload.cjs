@@ -30,6 +30,14 @@ const ALLOWED_COMMANDS = new Set([
   "delete_device",
   // 导出
   "export_data",
+  // 计费
+  "get_prices",
+  "get_price_versions",
+  "save_price",
+  "delete_model_prices",
+  "get_unpriced_models",
+  "import_prices_preview",
+  "import_prices_apply",
   // 其它
   "open_data_dir",
   "get_data_dir",

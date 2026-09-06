@@ -8,6 +8,7 @@ const zlib = require("node:zlib");
 const db = require("./db.cjs");
 const adapter = require("./adapter.cjs");
 const webdav = require("./webdav.cjs");
+const billing = require("./billing.cjs");
 
 // 重扫窗口：仅补抽最近 24h 的记录，避免每次全量
 const RESCAN_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -183,6 +184,17 @@ async function run(cfg) {
       log("upload", "info", `WebDAV 上传目标：${cfg.webdav.endpoint}${cfg.webdav.root || ""}`);
       log("upload", "info", "创建 WebDAV 业务目录");
       await ensureRoots(cfg.webdav);
+      // 价格表多设备同步（LWW）：远端新则替换本地，本地新则上传；失败仅记日志，不阻断数据同步
+      try {
+        const priceAction = await billing.syncPrices(cfg.webdav, deviceName);
+        if (priceAction.action === "downloaded") {
+          log("merge", "info", `价格表已更新（${priceAction.count} 条，来自「${priceAction.remoteBy}」），费用按新价格重算`);
+        } else if (priceAction.action === "uploaded" || priceAction.action === "created") {
+          log("upload", "info", "价格表已上传到 WebDAV（多设备共享）");
+        }
+      } catch (e) {
+        log("upload", "warn", "价格表同步失败（不影响数据同步）", e.message);
+      }
       // 设备元数据。上传前做设备 ID 碰撞探测：远端设备文件的写入实例既不是本次进程、
       // 也不是本机上次上传的进程时，说明同一设备 ID 有多台电脑在写（克隆/复制数据目录），
       // 双方日分片会互相覆盖——写 warn 日志告警但不阻断同步。

@@ -19,13 +19,14 @@ const defaultConfig: AppConfig = {
   schedule: { hourly: false, hourlyInterval: 1, daily: false, dailyTime: "23:30", autoStart: false, minimizeToTray: true, notifyOnSuccess: false },
   totalMode: "full",
   theme: "light",
+  billing: { enabled: false, displayCurrency: "CNY" as const, usdToCny: 7.2, importProxy: "" },
 };
 
 export const useAppStore = defineStore("app", {
   state: () => ({
     config: { ...defaultConfig } as AppConfig,
     loaded: false,
-    activePage: "overview" as "overview" | "detail" | "log" | "settings",
+    activePage: "overview" as "overview" | "detail" | "costs" | "billing" | "log" | "settings",
     activeSource: "zcode" as string,
     // 数据源清单（id/name 来自后端适配器，唯一事实源；enabled 为磁盘配置中的状态）
     sources: [] as SourceInfo[],
@@ -92,7 +93,7 @@ export const useAppStore = defineStore("app", {
     setActiveSource(source: string) {
       this.activeSource = source;
     },
-    setPage(page: "overview" | "detail" | "log" | "settings") {
+    setPage(page: "overview" | "detail" | "costs" | "billing" | "log" | "settings") {
       this.activePage = page;
     },
     async startSync() {

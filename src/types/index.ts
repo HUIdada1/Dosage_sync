@@ -25,6 +25,12 @@ export interface UsageRecord {
   completedAt?: number;
   durationMs?: number;
   status: string; // success | error | cancelled ...
+
+  // 费用（getRecords 返回；同步分片不含这些字段——费用是查询时按价格版本动态计算的派生数据）
+  costNative?: number; // 该记录币种的原生成本
+  costCurrency?: "CNY" | "USD";
+  costDisplay?: number; // 显示币种成本
+  priced?: boolean; // false = 模型未配置价格（费用计 0）
 }
 
 /** 统计口径（platform 口径从未实现，已移除；旧配置值在后端归一化为 compact） */
@@ -46,6 +52,8 @@ export interface AggregateRow {
   cacheCreationTokens: number;
   totalTokens: number; // 按当前口径计算的总量
   count: number; // 记录条数
+  cost: number; // 费用（显示币种，Antigravity 配额点不计入）
+  unpricedRecords: number; // 未配置价格的记录条数
 }
 
 /** 总览摘要 */
@@ -63,6 +71,13 @@ export interface Summary {
   todayCacheReadTokens: number; // 今日缓存命中量
   recordCount: number; // 明细条数
   todayRecordCount: number; // 今日调用次数
+  totalCost: number; // 累计费用（显示币种）
+  todayCost: number; // 今日费用
+  monthCost: number; // 本月费用（1 日至今）
+  monthCostPrev: number; // 上月 1 日至上月同日（同期对比）
+  unpricedRecords: number; // 未配置价格且有 token 的记录数
+  unpricedTokens: number; // 上述记录的 token 总量
+  unpricedModels: number; // 未配置价格的模型数
 }
 
 export interface DeviceBreakdown {
@@ -76,6 +91,7 @@ export interface DeviceBreakdown {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   recordCount: number;
+  cost: number; // 费用（显示币种）
 }
 
 /** 设备元信息 */
@@ -131,6 +147,15 @@ export interface AppConfig {
   schedule: ScheduleConfig;
   totalMode: TotalMode; // 总量口径
   theme: "light" | "dark"; // 主题
+  billing: BillingConfig; // 计费设置
+}
+
+/** 计费设置 */
+export interface BillingConfig {
+  enabled: boolean; // 关闭时隐藏费用页入口与所有费用元素
+  displayCurrency: "CNY" | "USD"; // 显示币种
+  usdToCny: number; // USD→CNY 汇率（手动，改后全部历史费用即时重算）
+  importProxy: string; // 价格源导入代理（留空=系统代理/直连）
 }
 
 /** 同步日志 */
@@ -164,4 +189,58 @@ export interface SourceHealth {
   dataDir: string | null;
   readable: boolean;
   lastSyncAt: number | null;
+}
+
+/** 模型价格版本（model_price 表一行） */
+export interface PriceEntry {
+  id: number;
+  providerId: string | null; // null = 不限供应商（通配）
+  modelId: string;
+  inputPerM: number;
+  outputPerM: number;
+  cacheReadPerM: number;
+  cacheWritePerM: number;
+  currency: "CNY" | "USD";
+  effectiveFrom: number; // epoch ms（含）
+  effectiveTo: number | null; // epoch ms（不含）；null = 至今
+  updatedAt: number;
+  updatedBy: string;
+}
+
+/** 价格表行：每个模型（+供应商维度）的最新版本段 */
+export interface PriceRow extends PriceEntry {
+  versions: number; // 该模型共有几个价格版本
+  active: boolean; // 当前时刻是否生效中（false = 待生效）
+}
+
+/** 未配置价格且有 token 消耗的模型 */
+export interface UnpricedModel {
+  providerId: string;
+  modelId: string;
+  records: number;
+  tokens: number;
+  firstSeen: number;
+}
+
+/** 导入预览条目（新增/变更共用；changes 带 prev） */
+export interface ImportPreviewItem {
+  providerId: string | null;
+  modelId: string;
+  inputPerM: number;
+  outputPerM: number;
+  cacheReadPerM: number;
+  cacheWritePerM: number;
+  currency: "CNY" | "USD";
+  prev?: PriceEntry;
+}
+
+/** 价格源导入预览 */
+export interface ImportPreview {
+  ok: boolean;
+  message?: string;
+  sourceName?: string;
+  resolvedUrl?: string;
+  additions: ImportPreviewItem[];
+  changes: ImportPreviewItem[];
+  missing: { modelId: string }[];
 }

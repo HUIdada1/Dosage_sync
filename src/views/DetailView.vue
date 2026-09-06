@@ -2,7 +2,7 @@
 import { onMounted, ref, reactive, watch } from "vue";
 import { useUsageStore } from "../stores/usage";
 import { useAppStore } from "../stores/app";
-import { formatInteger, formatDateTime } from "../composables/useFormat";
+import { formatInteger, formatDateTime, formatCost } from "../composables/useFormat";
 import * as api from "../api/ipc";
 import Drawer from "../components/Drawer.vue";
 import type { UsageRecord } from "../types";
@@ -123,6 +123,7 @@ async function doExport(fmt: "csv" | "json") {
 }
 
 function openRecord(r: UsageRecord) {
+  const billingOn = !!app.config.billing?.enabled;
   drawerTitle.value = "用量明细详情";
   drawerRows.value = [
     { k: "记录 ID", v: r.id },
@@ -139,6 +140,11 @@ function openRecord(r: UsageRecord) {
     { k: "推理 tokens", v: formatInteger(r.reasoningTokens) },
     { k: "缓存命中", v: formatInteger(r.cacheReadTokens) },
     { k: "缓存写入", v: formatInteger(r.cacheCreationTokens) },
+    // 费用按记录发生时刻的价格版本计算；原生为该模型计费币种金额
+    ...(billingOn ? [
+      { k: "费用", v: r.priced ? formatCost(r.costDisplay, 6) : "未配置价格" },
+      { k: "费用（原生币种）", v: r.priced ? `${(r.costNative ?? 0).toFixed(6)} ${r.costCurrency || ""}` : "—" },
+    ] : []),
     { k: "状态", v: r.status },
   ];
   drawerShow.value = true;
@@ -179,7 +185,9 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
       <div style="overflow-x: auto">
         <table class="table">
           <thead><tr>
-            <th>时间</th><th>模型</th><th>供应商</th><th>输入</th><th>输出</th><th>推理</th><th>缓存命中</th><th>状态</th>
+            <th>时间</th><th>模型</th><th>供应商</th><th>输入</th><th>输出</th><th>推理</th><th>缓存命中</th>
+            <th v-if="app.config.billing?.enabled">费用</th>
+            <th>状态</th>
           </tr></thead>
           <tbody>
             <tr v-for="(r, i) in usage.records" :key="r.id" :style="{ '--i': i }" @click="openRecord(r)">
@@ -190,6 +198,10 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
               <td class="num mono">{{ formatInteger(r.outputTokens) }}</td>
               <td class="num mono">{{ formatInteger(r.reasoningTokens) }}</td>
               <td class="num mono">{{ formatInteger(r.cacheReadTokens) }}</td>
+              <td v-if="app.config.billing?.enabled" class="num mono" :title="r.priced ? `原生 ${(r.costNative ?? 0).toFixed(6)} ${r.costCurrency || ''}` : '该模型未配置价格'">
+                <span v-if="r.priced" class="mono">{{ formatCost(r.costDisplay, 4) }}</span>
+                <span v-else style="color: var(--text-3)">—</span>
+              </td>
               <td><span class="pill" :class="statusText[r.status]?.cls || 'blue'">{{ statusText[r.status]?.label || r.status }}</span></td>
             </tr>
           </tbody>

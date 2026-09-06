@@ -8,6 +8,13 @@ const db = require("./db.cjs");
 const adapter = require("./adapter.cjs");
 const webdav = require("./webdav.cjs");
 const sync = require("./sync.cjs");
+const billing = require("./billing.cjs");
+
+/** 把计费显示币种/汇率注入查询层（load/save 配置后调用，汇率改动即时生效） */
+function applyBillingFx(cfg) {
+  const b = (cfg && cfg.billing) || {};
+  db.setBillingFx(b.displayCurrency, b.usdToCny);
+}
 
 /** 数据源在配置中的启用状态 */
 function sourceEnabled(cfg, id) {
@@ -20,11 +27,16 @@ function register(ctx) {
   const { ipcMain, app, shell } = ctx;
 
   // ===== 配置 =====
-  ipcMain.handle("load_config", () => config.loadConfig());
+  ipcMain.handle("load_config", () => {
+    const cfg = config.loadConfig();
+    applyBillingFx(cfg);
+    return cfg;
+  });
 
   ipcMain.handle("save_config", (_e, args) => {
     try {
       config.saveConfig(args.config);
+      applyBillingFx(args.config);
       const localId = db.getLocalDeviceId();
       if (localId && args.config && args.config.deviceName) {
         const sources = sync.enabledSourceIds(args.config).join(",");
@@ -159,6 +171,52 @@ function register(ctx) {
       return { ok: true, path: file, message: "导出成功" };
     } catch (e) {
       return { ok: false, path: null, message: e.message };
+    }
+  });
+
+  // ===== 计费 =====
+  ipcMain.handle("get_prices", () => db.listCurrentPrices());
+
+  ipcMain.handle("get_price_versions", (_e, args) => db.listPriceVersions(args.providerId || null, args.modelId));
+
+  ipcMain.handle("save_price", (_e, args) => {
+    try {
+      const cfg = config.loadConfig();
+      db.savePrice(args.price, cfg.deviceName || "这台电脑");
+      return { ok: true, message: "价格已保存，历史费用已按新版本重算" };
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+  });
+
+  ipcMain.handle("delete_model_prices", (_e, args) => {
+    try {
+      db.deleteModelPrices(args.providerId || null, args.modelId);
+      return { ok: true, message: `已删除 ${args.modelId} 的全部价格版本` };
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+  });
+
+  ipcMain.handle("get_unpriced_models", () => db.listUnpricedModels());
+
+  ipcMain.handle("import_prices_preview", async (_e, args) => {
+    try {
+      const cfg = config.loadConfig();
+      const proxy = (cfg.billing && cfg.billing.importProxy) || "";
+      return { ok: true, ...(await billing.previewImport(args.source, proxy)) };
+    } catch (e) {
+      return { ok: false, message: e.message, additions: [], changes: [], missing: [] };
+    }
+  });
+
+  ipcMain.handle("import_prices_apply", (_e, args) => {
+    try {
+      const cfg = config.loadConfig();
+      const n = billing.applyImport(args.items, args.effectiveFrom, cfg.deviceName || "这台电脑");
+      return { ok: true, message: `已导入 ${n} 条价格，历史费用已重算` };
+    } catch (e) {
+      return { ok: false, message: e.message };
     }
   });
 

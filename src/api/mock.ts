@@ -61,6 +61,24 @@ function calcTotal(r: any, mode: string): number {
   return r.inputTokens + r.outputTokens + r.reasoningTokens;
 }
 
+// mock 价格表（元/$ 每百万 token），与内置默认价格口径一致
+const mockPrices: Record<string, { i: number; o: number; cr: number; cur: "CNY" | "USD" }> = {
+  "deepseek-v4-pro": { i: 2, o: 8, cr: 0.4, cur: "CNY" },
+  "deepseek-v4-flash": { i: 1, o: 4, cr: 0.2, cur: "CNY" },
+  "GLM-5.3": { i: 2, o: 8, cr: 0.4, cur: "CNY" },
+  "GLM-5-Turbo": { i: 1, o: 4, cr: 0.2, cur: "CNY" },
+  "qwen3.7-max": { i: 2.4, o: 9.6, cr: 0.5, cur: "CNY" },
+  "MiniMax-M3": { i: 1, o: 4, cr: 0.2, cur: "CNY" },
+};
+
+/** mock 记录费用（原生币种；USD 按 7.2 折算为 CNY 显示） */
+function calcCost(r: any): number {
+  const p = mockPrices[r.modelId];
+  if (!p) return 0;
+  const native = ((r.inputTokens - r.cacheReadTokens) * p.i + r.cacheReadTokens * p.cr + (r.outputTokens + r.reasoningTokens) * p.o) / 1e6;
+  return p.cur === "USD" ? native * 7.2 : native;
+}
+
 const mock = {
   invoke(cmd: string, args: any = {}): Promise<any> {
     return new Promise((resolve) => {
@@ -82,6 +100,7 @@ const mock = {
               schedule: { hourly: false, hourlyInterval: 1, daily: false, dailyTime: "23:30", autoStart: false, minimizeToTray: true, notifyOnSuccess: false },
               totalMode: "full",
               theme: "light",
+              billing: { enabled: true, displayCurrency: "CNY", usdToCny: 7.2, importProxy: "" },
             });
             break;
           case "save_config": resolve({ ok: true, message: "设置保存成功" }); break;
@@ -130,6 +149,13 @@ const mock = {
               todayInputTokens: Math.round(input * 0.011), todayCacheReadTokens: Math.round(cacheRead * 0.011),
               recordCount: localRecs.length,
               todayRecordCount: Math.max(0, Math.round(localRecs.length * 0.011)),
+              totalCost: localRecs.reduce((n, r) => n + calcCost(r), 0),
+              todayCost: localRecs.slice(0, 5).reduce((n, r) => n + calcCost(r), 0),
+              monthCost: localRecs.filter((_, i) => i % 3 !== 2).reduce((n, r) => n + calcCost(r), 0),
+              monthCostPrev: localRecs.filter((_, i) => i % 3 === 2).reduce((n, r) => n + calcCost(r), 0),
+              unpricedRecords: 0,
+              unpricedTokens: 0,
+              unpricedModels: 0,
               selectedDeviceId: args.deviceId || null,
             });
             break;
@@ -137,7 +163,7 @@ const mock = {
           case "get_devices": {
             const local = allRecords.filter((r) => r.deviceId === LOCAL_DEVICE && (!args.source || r.source === args.source)).reduce((s, r) => s + calcTotal(r, mode), 0);
             resolve([
-              { deviceId: LOCAL_DEVICE, deviceName: "笔记本", source: "zcode,codex,dsh", lastSyncAt: Date.now() - 60000, online: true, totalTokens: local, isLocal: true },
+              { deviceId: LOCAL_DEVICE, deviceName: "笔记本", source: "zcode,codex,dsh", lastSyncAt: Date.now() - 60000, online: true, totalTokens: local, isLocal: true, cost: allRecords.reduce((n, r) => n + calcCost(r), 0) },
             ]);
             break;
           }
@@ -155,6 +181,7 @@ const mock = {
               cacheReadTokens: sum("cacheReadTokens"),
               cacheCreationTokens: sum("cacheCreationTokens"),
               recordCount: localRecs.length,
+              cost: localRecs.reduce((n, r) => n + calcCost(r), 0),
             }]);
             break;
           }
@@ -165,7 +192,7 @@ const mock = {
               const d = new Date(2026, 8, 4); d.setDate(d.getDate() - i);
               const dow = d.getDay(); const weekend = dow === 0 || dow === 6 ? 0.55 : 1;
               const v = Math.round(4.6e6 * weekend * (0.72 + seed(i * 7 + days) * 0.56) * (0.65 + (days - i) / days * 0.35));
-              out.push({ date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`, total: v, models: { "GPT-5": Math.round(v * 0.42), "Claude 4": Math.round(v * 0.33), "Gemini 2.5": Math.round(v * 0.25) } });
+              out.push({ date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`, total: v, cost: (v / 1e6) * 2.6, models: { "GPT-5": Math.round(v * 0.42), "Claude 4": Math.round(v * 0.33), "Gemini 2.5": Math.round(v * 0.25) } });
             }
             resolve(out);
             break;
@@ -180,7 +207,7 @@ const mock = {
             while (d <= endD) {
               const h = seed(d.getMonth() * 31 + d.getDate());
               const v = Math.round(1500000 + h * 4.2e6);
-              out.push({ date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`, total: v });
+              out.push({ date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`, total: v, cost: (v / 1e6) * 2.6 });
               d.setDate(d.getDate() + 1);
             }
             resolve(out);
@@ -191,11 +218,12 @@ const mock = {
             const map: Record<string, any> = {};
             allRecords.filter((r) => !args.source || r.source === args.source).forEach((r) => {
               const key = dim === "provider" ? r.providerId : dim === "model" ? r.modelId : dim === "source" ? r.source : r.deviceName;
-              if (!map[key]) map[key] = { key, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, count: 0 };
+              if (!map[key]) map[key] = { key, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, count: 0, cost: 0, unpricedRecords: 0 };
               map[key].inputTokens += r.inputTokens; map[key].outputTokens += r.outputTokens;
               map[key].reasoningTokens += r.reasoningTokens; map[key].cacheReadTokens += r.cacheReadTokens;
               map[key].cacheCreationTokens += r.cacheCreationTokens;
               map[key].totalTokens += calcTotal(r, mode); map[key].count++;
+              map[key].cost += calcCost(r);
             });
             resolve(Object.values(map).sort((a: any, b: any) => b.totalTokens - a.totalTokens));
             break;
@@ -209,7 +237,16 @@ const mock = {
               && (!args.provider || r.providerId === args.provider)
               && (!args.status || r.status === args.status)
             );
-            resolve({ records: filtered.slice(offset, offset + limit), total: filtered.length });
+            resolve({
+              records: filtered.slice(offset, offset + limit).map((r) => ({
+                ...r,
+                costNative: calcCost(r),
+                costCurrency: "CNY" as const,
+                costDisplay: calcCost(r),
+                priced: !!mockPrices[r.modelId],
+              })),
+              total: filtered.length,
+            });
             break;
           }
           case "start_sync": resolve(null); break;
@@ -234,6 +271,38 @@ const mock = {
           case "get_app_version": resolve("1.0.0"); break;
           case "get_is_portable": resolve(false); break;
           case "reset_local_cache": resolve({ ok: true, message: "本地缓存已清空（演示环境）" }); break;
+          // ===== 计费 =====
+          case "get_prices":
+            resolve(Object.entries(mockPrices).map(([model, p], idx) => ({
+              id: idx + 1, providerId: null, modelId: model,
+              inputPerM: p.i, outputPerM: p.o, cacheReadPerM: p.cr, cacheWritePerM: 0,
+              currency: p.cur, effectiveFrom: 0, effectiveTo: null,
+              updatedAt: Date.now() - 86400000, updatedBy: "内置默认",
+              versions: 1, active: true,
+            })));
+            break;
+          case "get_price_versions":
+            resolve([{
+              id: 1, providerId: null, modelId: args.modelId,
+              inputPerM: 4, outputPerM: 16, cacheReadPerM: 0.8, cacheWritePerM: 0,
+              currency: "CNY", effectiveFrom: 0, effectiveTo: Date.parse("2026-08-15"),
+              updatedAt: Date.now() - 86400000 * 20, updatedBy: "内置默认",
+            }]);
+            break;
+          case "save_price": resolve({ ok: true, message: "价格已保存，历史费用已按新版本重算" }); break;
+          case "delete_model_prices": resolve({ ok: true, message: "已删除该模型的全部价格版本" }); break;
+          case "get_unpriced_models":
+            resolve([{ providerId: "Dots", modelId: "dots3-note-prev", records: 19, tokens: 428135, firstSeen: Date.parse("2026-06-20") }]);
+            break;
+          case "import_prices_preview":
+            resolve({
+              ok: true, sourceName: args.source === "openrouter" ? "OpenRouter" : "LiteLLM",
+              resolvedUrl: "https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json",
+              additions: [{ providerId: null, modelId: "dots3-note-prev", inputPerM: 0.5, outputPerM: 2, cacheReadPerM: 0.1, cacheWritePerM: 0, currency: "USD" }],
+              changes: [], missing: [],
+            });
+            break;
+          case "import_prices_apply": resolve({ ok: true, message: `已导入 ${(args.items || []).length} 条价格，历史费用已重算` }); break;
           default: resolve(null);
         }
       }, 60);

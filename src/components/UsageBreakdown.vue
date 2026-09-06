@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import type { DeviceBreakdown, Summary } from "../types";
 import { useAppStore } from "../stores/app";
-import { formatInteger, formatPercent, formatNumber } from "../composables/useFormat";
+import { formatInteger, formatPercent, formatNumber, formatCost } from "../composables/useFormat";
 
 const props = defineProps<{ summary: Summary | DeviceBreakdown; deviceName?: string; isLocal?: boolean }>();
 const app = useAppStore();
@@ -43,7 +43,12 @@ const cacheHitRate = computed(() => props.summary.inputTokens > 0 ? props.summar
     <div class="hitrate">
       <div class="hr-label">缓存命中率</div>
       <div class="hr-val mono">{{ formatPercent(cacheHitRate) }}</div>
-      <div class="hr-sub">命中 {{ formatNumber(summary.cacheReadTokens) }} / 输入 {{ formatNumber(summary.inputTokens) }} · 缓存复用计费更低</div>
+      <div class="hr-sub">
+        命中 {{ formatNumber(summary.cacheReadTokens) }} / 输入 {{ formatNumber(summary.inputTokens) }} · 缓存复用计费更低
+        <template v-if="app.config.billing?.enabled && (summary as any).cost != null">
+          · 费用 <b class="mono" style="color: var(--text-2)">{{ formatCost((summary as any).cost) }}</b>
+        </template>
+      </div>
     </div>
   </div>
 </template>

@@ -1,6 +1,7 @@
 // IPC 封装：Electron 环境下通过 preload 桥接调用主进程；浏览器环境下回退到本地 mock（便于独立开发/预览 UI）。
 import type {
   AppConfig, Summary, DeviceMeta, DeviceBreakdown, SyncLog, SyncProgress, SourceHealth, SourceInfo, UsageRecord, TotalMode, AggregateRow,
+  PriceEntry, PriceRow, UnpricedModel, ImportPreview, ImportPreviewItem,
 } from "../types";
 import { mock } from "./mock";
 
@@ -72,6 +73,20 @@ export const exportData = (format: "csv" | "json", filter?: ExportFilter | null)
 // ===== 设备 =====
 export const deleteDevice = (deviceId: string) =>
   call<{ ok: boolean; message: string }>("delete_device", { deviceId });
+
+// ===== 计费 =====
+export const getPrices = () => call<PriceRow[]>("get_prices");
+export const getPriceVersions = (providerId: string | null, modelId: string) =>
+  call<PriceEntry[]>("get_price_versions", { providerId, modelId });
+export const savePrice = (price: Partial<PriceEntry>) =>
+  call<{ ok: boolean; message: string }>("save_price", { price });
+export const deleteModelPrices = (providerId: string | null, modelId: string) =>
+  call<{ ok: boolean; message: string }>("delete_model_prices", { providerId, modelId });
+export const getUnpricedModels = () => call<UnpricedModel[]>("get_unpriced_models");
+export const importPricesPreview = (source: "litellm" | "openrouter") =>
+  call<ImportPreview>("import_prices_preview", { source });
+export const importPricesApply = (items: ImportPreviewItem[], effectiveFrom: number) =>
+  call<{ ok: boolean; message: string }>("import_prices_apply", { items, effectiveFrom });
 
 // ===== 其它 =====
 export const openDataDir = () => call<void>("open_data_dir");
