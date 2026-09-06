@@ -2,9 +2,10 @@
 import { onMounted, ref, computed, watch } from "vue";
 import { useAppStore } from "../stores/app";
 import { useUsageStore } from "../stores/usage";
-import { formatNumber, formatCost, formatInteger } from "../composables/useFormat";
+import { formatNumber, formatInteger } from "../composables/useFormat";
 import * as api from "../api/ipc";
 import EmptyState from "../components/EmptyState.vue";
+import CostTrendChart from "../components/CostTrendChart.vue";
 import type { AggregateRow } from "../types";
 
 const app = useAppStore();
@@ -18,29 +19,20 @@ const monthTrendPct = computed(() => {
   return ((s.monthCost - s.monthCostPrev) / s.monthCostPrev) * 100;
 });
 
-// ===== 费用趋势（SVG 面积图） =====
-const trendRange = ref(30);
+// ===== 币种展示：费用数值后端已按显示币种换算，货币符号随设置切换 =====
+const currency = computed(() => app.config.billing?.displayCurrency || "CNY");
+const curSymbol = computed(() => (currency.value === "USD" ? "$" : "¥"));
+
+function fmtCost(n: number | null | undefined, digits = 2): string {
+  const v = Number(n);
+  if (!isFinite(v)) return "—";
+  return curSymbol.value + v.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+// ===== 费用趋势（echarts 组件负责渲染与补齐缺失日期） =====
+const trendRange = ref(7); // 默认「最近7天」
 const trend = ref<{ date: string; cost: number }[]>([]);
 const trendRequestId = ref(0);
-
-const chart = computed(() => {
-  const W = 920, H = 250, L = 52, R = 16, T = 18, B = 34;
-  const data = trend.value;
-  if (!data.length) return null;
-  const pw = W - L - R, ph = H - T - B;
-  const max = Math.max(...data.map((d) => d.cost), 0.01) * 1.15;
-  const x = (i: number) => L + (i / Math.max(data.length - 1, 1)) * pw;
-  const y = (v: number) => T + ph - (v / max) * ph;
-  const points = data.map((d, i) => `${x(i)},${y(d.cost)}`).join(" ");
-  const area = `M${x(0)},${y(0)} L` + data.map((d, i) => `${x(i)},${y(d.cost)}`).join(" L ") + ` L${x(data.length - 1)},${T + ph} Z`;
-  const gridLines = [0, 1, 2, 3, 4].map((g) => ({
-    y: T + ph - (g / 4) * ph,
-    label: "¥" + Math.round((max * g) / 4),
-  }));
-  const step = Math.max(1, Math.ceil(data.length / 6));
-  const xLabels = data.filter((_, i) => i % step === 0).map((d, i) => ({ x: x(i * step), label: d.date.slice(5) }));
-  return { W, H, L, R, T, B, max, x, y, points, area, gridLines, xLabels, data };
-});
 
 async function loadTrend() {
   const requestId = ++trendRequestId.value;
@@ -113,7 +105,7 @@ function goBilling() {
       <div class="page-title">费用</div>
       <div class="page-sub">
         按模型单价动态计费 · 历史费用跟随价格版本重算 · 显示币种
-        <b>{{ app.config.billing?.displayCurrency || "CNY" }}</b>（USD 汇率 {{ app.config.billing?.usdToCny ?? 7.2 }}）
+        <b>{{ currency }}</b>（USD 汇率 {{ app.config.billing?.usdToCny ?? 7.2 }}）
       </div>
 
       <!-- 未配置价格提醒 -->
@@ -130,7 +122,7 @@ function goBilling() {
       <div class="kpis cost-kpis" v-if="summary">
         <div class="kpi"><i class="k-line-glow"></i>
           <div class="k-label"><span class="kdot"></span>本月费用</div>
-          <div class="k-value mono">{{ formatCost(summary.monthCost) }}</div>
+          <div class="k-value mono">{{ fmtCost(summary.monthCost) }}</div>
           <div class="k-foot">
             <span v-if="monthTrendPct !== null" class="up" :class="{ down: monthTrendPct < 0 }">{{ monthTrendPct >= 0 ? "+" : "" }}{{ monthTrendPct.toFixed(1) }}%</span>
             <span v-else>—</span>
@@ -139,13 +131,13 @@ function goBilling() {
         </div>
         <div class="kpi"><i class="k-line-glow"></i>
           <div class="k-label"><span class="kdot"></span>今日费用</div>
-          <div class="k-value mono">{{ formatCost(summary.todayCost) }}</div>
+          <div class="k-value mono">{{ fmtCost(summary.todayCost) }}</div>
           <div class="k-foot">今日 0 点起 · {{ formatInteger(summary.todayRecordCount) }} 次调用</div>
         </div>
         <div class="kpi"><i class="k-line-glow"></i>
           <div class="k-label"><span class="kdot"></span>累计费用</div>
-          <div class="k-value mono">{{ formatCost(summary.totalCost) }}</div>
-          <div class="k-foot">全部记录 · {{ (app.config.billing?.displayCurrency || "CNY") === "CNY" ? "USD 部分按汇率折算" : "CNY 部分按汇率折算" }}</div>
+          <div class="k-value mono">{{ fmtCost(summary.totalCost) }}</div>
+          <div class="k-foot">全部记录 · {{ currency === "CNY" ? "USD 部分按汇率折算" : "CNY 部分按汇率折算" }}</div>
         </div>
         <div class="kpi" :class="{ 'warn-kpi': summary.unpricedModels > 0 }"><i class="k-line-glow"></i>
           <div class="k-label"><span class="kdot"></span>未配置价格</div>
@@ -155,42 +147,8 @@ function goBilling() {
       </div>
       <div class="skeleton sk-kpi" v-else style="height: 96px; margin-bottom: 18px"></div>
 
-      <!-- 费用趋势 -->
-      <div class="card">
-        <div class="card-head">
-          <h2>费用趋势</h2><span class="hint">每日费用（{{ app.config.billing?.displayCurrency || "CNY" }}）· 悬停查看单日金额</span>
-          <div class="right">
-            <div class="tabs">
-              <button class="tab" :class="{ active: trendRange === 7 }" @click="setRange(7)">近7天</button>
-              <button class="tab" :class="{ active: trendRange === 30 }" @click="setRange(30)">近30天</button>
-              <button class="tab" :class="{ active: trendRange === 90 }" @click="setRange(90)">近90天</button>
-            </div>
-          </div>
-        </div>
-        <div v-if="chart" class="chart-wrap">
-          <svg :viewBox="`0 0 ${chart.W} ${chart.H}`" preserveAspectRatio="none" style="width: 100%; height: auto">
-            <defs>
-              <linearGradient id="costGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stop-color="var(--accent)" stop-opacity=".22" />
-                <stop offset="1" stop-color="var(--accent)" stop-opacity="0" />
-              </linearGradient>
-            </defs>
-            <g v-for="(g, i) in chart.gridLines" :key="'g' + i">
-              <line :x1="chart.L" :x2="chart.W - chart.R" :y1="g.y" :y2="g.y" stroke="var(--border)" stroke-dasharray="2 5" />
-              <text :x="chart.L - 8" :y="g.y + 3.5" text-anchor="end" class="chart-axis">{{ g.label }}</text>
-            </g>
-            <path :d="chart.area" fill="url(#costGrad)" />
-            <polyline :points="chart.points" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
-            <line :x1="chart.x(chart.data.length - 1)" :x2="chart.x(chart.data.length - 1)" :y1="chart.T" :y2="chart.T + (chart.H - chart.T - chart.B)" stroke="var(--border-strong)" stroke-dasharray="3 4" />
-            <circle v-for="(d, i) in chart.data" :key="'p' + i" :cx="chart.x(i)" :cy="chart.y(d.cost)" r="3"
-              fill="var(--surface)" stroke="var(--accent)" stroke-width="1.6" class="chart-dot">
-              <title>{{ d.date }} · {{ formatCost(d.cost) }}</title>
-            </circle>
-            <text v-for="(l, i) in chart.xLabels" :key="'x' + i" :x="l.x" :y="chart.H - 10" text-anchor="middle" class="chart-axis">{{ l.label }}</text>
-          </svg>
-        </div>
-        <div v-else class="skeleton sk-chart" style="height: 230px; margin-bottom: 0"></div>
-      </div>
+      <!-- 费用趋势（echarts，时间段选择器默认最近7天） -->
+      <CostTrendChart :data="trend" :range="trendRange" :currency="currency" @change-range="setRange" />
 
       <!-- 费用榜 -->
       <div class="card">
@@ -217,7 +175,7 @@ function goBilling() {
                 <td class="num mono">{{ formatInteger(r.count) }}</td>
                 <td class="num mono">{{ formatNumber(r.totalTokens) }}</td>
                 <td class="num mono cost-col">
-                  <span v-if="r.cost > 0 || r.unpricedRecords === 0">{{ formatCost(r.cost) }}</span>
+                  <span v-if="r.cost > 0 || r.unpricedRecords === 0">{{ fmtCost(r.cost) }}</span>
                   <span v-else class="pill warn">未配置价格</span>
                 </td>
                 <td>
@@ -236,7 +194,7 @@ function goBilling() {
       </div>
 
       <!-- 口径脚注 -->
-      <div class="card" style="padding: 14px 20px">
+      <div class="card footnote-card">
         <div class="caliper">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
           <div>
@@ -272,17 +230,23 @@ function goBilling() {
 .cost-banner .btext b { color: var(--text); }
 .cost-kpis { grid-template-columns: repeat(4, 1fr); }
 .kpi .k-foot .up.down { color: var(--err); }
-.chart-wrap svg { display: block; width: 100%; height: auto; }
-.chart-axis { font-size: 10.5px; fill: var(--text-3); font-family: "Cascadia Code", Consolas, monospace; }
-.chart-dot { cursor: pointer; }
-.chart-dot:hover { stroke-width: 3; }
+.kpi.warn-kpi { border-color: rgba(217, 119, 6, 0.4); }
+.kpi.warn-kpi .k-label .kdot { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
 .rank-cell { color: var(--text-3); font-weight: 600; font-size: 12px; }
 .cost-col { font-size: 13.5px; }
 .share { display: inline-flex; align-items: center; gap: 8px; min-width: 150px; }
 .share .track { display: block; flex: 1; height: 5px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
 .share .fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent-2), var(--accent-strong)); }
 .share .pct { font-size: 11px; color: var(--text-3); min-width: 44px; text-align: right; }
+.footnote-card { padding: 14px 20px; }
 .caliper { display: flex; align-items: flex-start; gap: 10px; font-size: 12px; color: var(--text-3); line-height: 1.7; }
 .caliper svg { width: 15px; height: 15px; flex-shrink: 0; margin-top: 2px; color: var(--text-3); }
 .caliper b { color: var(--text-2); font-weight: 600; }
+@media (max-width: 1100px) {
+  .cost-kpis { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 560px) {
+  .cost-kpis { grid-template-columns: 1fr; }
+  .share { min-width: 110px; }
+}
 </style>

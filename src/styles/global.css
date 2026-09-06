@@ -621,6 +621,67 @@ button {
   transform: scale(0.97);
 }
 
+.btn-outline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 紧凑尺寸（表格行内等窄场景） */
+.btn-outline.sm {
+  height: 28px;
+  padding: 0 11px;
+  font-size: 11.5px;
+  border-radius: 7px;
+  gap: 5px;
+}
+
+/* 表格/列表行内文字操作按钮（改价/历史/删除等） */
+.btn-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, transform .12s ease;
+}
+
+.btn-link svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+.btn-link:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.btn-link:active {
+  transform: scale(0.95);
+}
+
+.btn-link.danger {
+  color: var(--err);
+}
+
+.btn-link.danger:hover {
+  background: rgba(220, 38, 38, 0.1);
+  color: var(--err);
+}
+
+.btn-link:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ===== 内容区 ===== */
 .content {
   padding: 22px 26px 44px;
@@ -2115,7 +2176,8 @@ button {
   flex: 1;
 }
 
-.drawer .d-close {
+/* 面板/弹窗右上角关闭按钮（抽屉与模态共用） */
+.d-close {
   width: 30px;
   height: 30px;
   border-radius: 8px;
@@ -2126,10 +2188,17 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: background .15s ease, color .15s ease, transform .12s ease;
+  flex-shrink: 0;
 }
 
-.drawer .d-close:hover {
+.d-close:hover {
+  background: var(--accent-soft);
   color: var(--text);
+}
+
+.d-close:active {
+  transform: scale(0.94);
 }
 
 .drawer .d-body {

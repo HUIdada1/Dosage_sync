@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, reactive, computed } from "vue";
 import { useAppStore } from "../stores/app";
-import { formatNumber, formatCost, formatInteger, formatDateTime } from "../composables/useFormat";
+import { formatNumber, formatInteger, formatDateTime } from "../composables/useFormat";
 import * as api from "../api/ipc";
 import type { PriceRow, PriceEntry, UnpricedModel, ImportPreview, ImportPreviewItem, RemotePricingConfig } from "../types";
 
@@ -277,46 +277,48 @@ onMounted(async () => {
     <div class="page-title">计费规则</div>
     <div class="page-sub">
       模型单价 · 价格版本 · 导入与同步（价格表经 WebDAV 全设备共享）
-      <span v-if="actionResult" class="save-feedback" :class="{ ok: actionResult.ok }" style="margin-left: 10px">{{ actionResult.message }}</span>
+      <span v-if="actionResult" class="save-feedback" :class="{ ok: actionResult.ok }">{{ actionResult.message }}</span>
     </div>
 
-    <!-- 计费设置 -->
+    <!-- 计费设置 + 远程价格源（左右分栏） -->
     <div class="card">
-      <div class="rule-group-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/></svg>
-        计费设置
-      </div>
-      <div class="switch-row">
-        <div class="s-left">
-          <div class="s-title">启用费用统计</div>
-          <div class="s-desc">关闭后隐藏「费用」页与所有费用元素，记录与同步不受影响</div>
-        </div>
-        <div class="switch" :class="{ on: app.config.billing?.enabled }" role="switch" :aria-checked="!!app.config.billing?.enabled" @click="toggleEnabled"></div>
-      </div>
-      <div class="form-grid billing-form">
-        <div class="form-field">
-          <label>显示币种</label>
-          <div class="tabs">
-            <button class="tab" :class="{ active: app.config.billing?.displayCurrency === 'CNY' }" @click="setCurrency('CNY')">CNY 人民币</button>
-            <button class="tab" :class="{ active: app.config.billing?.displayCurrency === 'USD' }" @click="setCurrency('USD')">USD 美元</button>
+      <div class="billing-setup">
+        <!-- 左：计费开关与基础设置 -->
+        <div class="bs-col">
+          <div class="rule-group-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/></svg>
+            计费设置
           </div>
+          <div class="switch-row">
+            <div class="s-left">
+              <div class="s-title">启用费用统计</div>
+              <div class="s-desc">关闭后隐藏「费用」页与所有费用元素，记录与同步不受影响</div>
+            </div>
+            <div class="switch" :class="{ on: app.config.billing?.enabled }" role="switch" :aria-checked="!!app.config.billing?.enabled" @click="toggleEnabled"></div>
+          </div>
+          <div class="form-grid billing-form">
+            <div class="form-field">
+              <label>显示币种</label>
+              <div class="tabs">
+                <button class="tab" :class="{ active: app.config.billing?.displayCurrency === 'CNY' }" @click="setCurrency('CNY')">CNY 人民币</button>
+                <button class="tab" :class="{ active: app.config.billing?.displayCurrency === 'USD' }" @click="setCurrency('USD')">USD 美元</button>
+              </div>
+            </div>
+            <div class="form-field">
+              <label>USD → CNY 汇率</label>
+              <input class="f-input mono" type="number" step="0.01" min="0" v-model="app.config.billing.usdToCny" @blur="onRateBlur" />
+            </div>
+            <div class="form-field full">
+              <label>导入代理（可选，留空直连）</label>
+              <input class="f-input mono" v-model="app.config.billing.importProxy" placeholder="http://127.0.0.1:7897" @blur="autoSave" />
+            </div>
+          </div>
+          <div class="bs-note">汇率修改后，全部历史费用按新汇率即时重算 · jsdelivr 镜像无代理时也可直连</div>
         </div>
-        <div class="form-field">
-          <label>USD → CNY 汇率</label>
-          <input class="f-input mono" type="number" step="0.01" min="0" v-model="app.config.billing.usdToCny" @blur="onRateBlur" />
-        </div>
-        <div class="form-field">
-          <label>导入代理（可选，留空直连）</label>
-          <input class="f-input mono" v-model="app.config.billing.importProxy" placeholder="http://127.0.0.1:7897" @blur="autoSave" />
-        </div>
-      </div>
-      <div class="switch-row" style="padding-top: 2px">
-        <div class="s-desc">汇率修改后，全部历史费用按新汇率即时重算 · jsdelivr 镜像无代理时也可直连</div>
-      </div>
 
-        <!-- 远程价格源（来源 remote：手动 > 远程 > 内置） -->
-        <div class="setting-group" style="border-bottom: none; margin-bottom: 0">
-          <div class="sg-title">
+        <!-- 右：远程价格源（来源 remote：手动 > 远程 > 内置） -->
+        <div class="bs-col">
+          <div class="rule-group-title">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
             远程价格源
           </div>
@@ -328,20 +330,20 @@ onMounted(async () => {
             <div class="switch" :class="{ on: app.config.billing?.remotePricing?.enabled }" role="switch" :aria-checked="!!app.config.billing?.remotePricing?.enabled" @click="toggleRemotePricing"></div>
           </div>
           <div class="form-grid billing-form">
-            <div class="form-field" style="grid-column: 1 / -1">
+            <div class="form-field full">
               <label>价格表网址（LiteLLM 兼容格式）</label>
               <input class="f-input mono" v-model="app.config.billing.remotePricing.url" placeholder="https://…/model_prices_and_context_window.json" @blur="saveRemoteField" />
             </div>
-            <div class="form-field" style="grid-column: 1 / 2">
+            <div class="form-field">
               <label>哈希校验网址（可选，远程无变化时短路由）</label>
               <input class="f-input mono" v-model="app.config.billing.remotePricing.hashUrl" placeholder="https://…/model_prices_and_context_window.sha256" @blur="saveRemoteField" />
             </div>
-            <div class="form-field" style="grid-column: 2 / 3">
+            <div class="form-field">
               <label>检查间隔（小时）</label>
               <input class="f-input mono" type="number" min="1" step="1" v-model.number="app.config.billing.remotePricing.intervalHours" @blur="saveRemoteField" />
             </div>
           </div>
-          <div class="switch-row" style="border-top: none; padding-top: 2px">
+          <div class="switch-row">
             <div class="s-left">
               <div class="s-desc">
                 <template v-if="remoteStatus?.lastAt">上次拉取 {{ formatDateTime(remoteStatus.lastAt) }} · 命中 {{ remoteStatus.lastModels }} 个本地模型<span v-if="remoteMsg"> · </span></template>
@@ -352,6 +354,7 @@ onMounted(async () => {
             <button class="btn-outline" :disabled="remotePulling" @click="pullRemoteNow">{{ remotePulling ? "拉取中…" : "立即拉取" }}</button>
           </div>
         </div>
+      </div>
     </div>
 
     <!-- 模型价格表 -->
@@ -376,7 +379,7 @@ onMounted(async () => {
           <thead><tr>
             <th>模型</th><th>供应商</th>
             <th class="num">输入 /M</th><th class="num">输出 /M</th><th class="num">缓存读 /M</th><th class="num">缓存写 /M</th>
-            <th>币种</th><th>来源</th><th>现行版本</th><th style="text-align: right">操作</th>
+            <th>币种</th><th>来源</th><th>现行版本</th><th class="op-cell">操作</th>
           </tr></thead>
           <tbody>
             <tr v-for="p in prices" :key="p.id" :class="{ 'tr-unpriced': !p.active }">
@@ -392,10 +395,19 @@ onMounted(async () => {
                 <template v-if="p.active"><b>{{ effLabel(p.effectiveFrom) }}</b> · {{ p.versions > 1 ? `${p.versions} 个历史版本` : "无历史" }}</template>
                 <template v-else><span class="pill warn">待生效 · {{ effLabel(p.effectiveFrom) }}</span></template>
               </td>
-              <td style="text-align: right">
-                <button class="btn-link" @click="openEdit(p)">改价</button>
-                <button class="btn-link" @click="openHistory(p)">历史</button>
-                <button class="btn-link danger" @click="removeModel(p)">删除</button>
+              <td class="op-cell">
+                <button class="btn-link" @click="openEdit(p)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+                  改价
+                </button>
+                <button class="btn-link" @click="openHistory(p)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                  历史
+                </button>
+                <button class="btn-link danger" @click="removeModel(p)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                  删除
+                </button>
               </td>
             </tr>
             <tr v-if="!prices.length">
@@ -418,7 +430,7 @@ onMounted(async () => {
         <table class="table">
           <thead><tr>
             <th>模型</th><th>供应商</th><th class="num">记录</th><th class="num">Token</th>
-            <th>输入 /M</th><th>输出 /M</th><th>缓存读 /M</th><th>币种</th><th>生效日期</th><th style="text-align: right">操作</th>
+            <th>输入 /M</th><th>输出 /M</th><th>缓存读 /M</th><th>币种</th><th>生效日期</th><th class="op-cell">操作</th>
           </tr></thead>
           <tbody>
             <tr v-for="u in unpriced" :key="draftKey(u)" class="tr-unpriced">
@@ -435,7 +447,7 @@ onMounted(async () => {
                 </select>
               </td>
               <td><input class="f-input mini-input" type="date" v-model="draftRows[draftKey(u)].effectiveFrom" /></td>
-              <td style="text-align: right"><button class="btn-outline" style="height: 28px; font-size: 11.5px" @click="saveDraft(u)">保存</button></td>
+              <td class="op-cell"><button class="btn-outline sm" @click="saveDraft(u)">保存</button></td>
             </tr>
           </tbody>
         </table>
@@ -443,7 +455,7 @@ onMounted(async () => {
     </div>
 
     <!-- 计费口径 -->
-    <div class="card" style="padding: 16px 20px">
+    <div class="card footnote-card">
       <div class="formula-line">
         单条记录费用 = <code>净输入 × 输入价</code> + <code>缓存命中 × 缓存读价</code> + <code>缓存写入 × 缓存写价</code> + <code>(输出 + 推理) × 输出价</code>
         <span class="muted">（净输入 = 输入 − 缓存命中；单价按记录发生时刻生效的版本）</span>
@@ -611,7 +623,24 @@ onMounted(async () => {
 <style scoped>
 .rule-group-title { display: flex; align-items: center; gap: 9px; font-size: 13.5px; font-weight: 700; margin-bottom: 12px; color: var(--text); }
 .rule-group-title svg { width: 16px; height: 16px; color: var(--accent); }
-.billing-form { padding: 4px 0 10px; }
+
+/* 计费设置 + 远程价格源：左右分栏 */
+.billing-setup { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 0 32px; }
+.bs-col + .bs-col { border-left: 1px solid var(--border); padding-left: 32px; }
+.billing-form { padding: 4px 0 2px; }
+.bs-note { border-top: 1px solid var(--border); padding-top: 12px; font-size: 11.5px; color: var(--text-3); line-height: 1.6; }
+.bs-col .switch-row:last-child { padding-bottom: 0; }
+@media (max-width: 1080px) {
+  .billing-setup { grid-template-columns: 1fr; gap: 20px 0; }
+  .bs-col + .bs-col { border-left: none; padding-left: 0; }
+}
+
+/* 表格操作列与行内按钮 */
+.op-cell { text-align: right; white-space: nowrap; }
+.op-cell .btn-link + .btn-link { margin-left: 2px; }
+.page-sub .save-feedback { margin-left: 10px; }
+.footnote-card { padding: 16px 20px; }
+
 .tr-unpriced td { background: rgba(217, 119, 6, 0.045); }
 .tr-unpriced:hover td { background: rgba(217, 119, 6, 0.08); }
 .ver { font-size: 11.5px; color: var(--text-3); }
