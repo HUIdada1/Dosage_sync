@@ -3,9 +3,45 @@ import { onMounted, ref, reactive, computed } from "vue";
 import { useAppStore } from "../stores/app";
 import { formatNumber, formatCost, formatInteger, formatDateTime } from "../composables/useFormat";
 import * as api from "../api/ipc";
-import type { PriceRow, PriceEntry, UnpricedModel, ImportPreview, ImportPreviewItem } from "../types";
+import type { PriceRow, PriceEntry, UnpricedModel, ImportPreview, ImportPreviewItem, RemotePricingConfig } from "../types";
 
 const app = useAppStore();
+
+// ===== 远程价格源（来源 remote：自动拉取，优先级 手动 > 远程 > 内置） =====
+const remotePulling = ref(false);
+const remoteStatus = ref<(RemotePricingConfig & { lastAt: number | null; lastHash: string | null; lastModels: number | null }) | null>(null);
+const remoteMsg = ref<{ ok: boolean; text: string } | null>(null);
+
+async function loadRemoteStatus() {
+  try {
+    remoteStatus.value = await api.getRemotePricingStatus();
+  } catch {
+    remoteStatus.value = null;
+  }
+}
+async function saveRemoteField() {
+  const r = await app.save();
+  if (!r.ok) flash(r);
+}
+function toggleRemotePricing() {
+  app.config.billing.remotePricing.enabled = !app.config.billing.remotePricing.enabled;
+  saveRemoteField();
+}
+async function pullRemoteNow() {
+  remotePulling.value = true;
+  remoteMsg.value = null;
+  try {
+    // 立即拉取强制跳过哈希短路（确保拿到远端最新）
+    const r = await api.pullRemotePricing(true);
+    remoteMsg.value = { ok: !!r.ok, text: r.message };
+    if (r.ok) await Promise.all([loadPrices(), loadRemoteStatus()]);
+  } catch (e) {
+    remoteMsg.value = { ok: false, text: e instanceof Error ? e.message : "拉取失败" };
+  } finally {
+    remotePulling.value = false;
+  }
+}
+const sourceLabel: Record<string, string> = { manual: "手动", remote: "远程", builtin: "内置" };
 
 // ===== 价格表 =====
 const prices = ref<PriceRow[]>([]);
@@ -232,7 +268,7 @@ async function applyImport() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadPrices(), loadUnpriced()]);
+  await Promise.all([loadPrices(), loadUnpriced(), loadRemoteStatus()]);
 });
 </script>
 
@@ -277,6 +313,45 @@ onMounted(async () => {
       <div class="switch-row" style="padding-top: 2px">
         <div class="s-desc">汇率修改后，全部历史费用按新汇率即时重算 · jsdelivr 镜像无代理时也可直连</div>
       </div>
+
+        <!-- 远程价格源（来源 remote：手动 > 远程 > 内置） -->
+        <div class="setting-group" style="border-bottom: none; margin-bottom: 0">
+          <div class="sg-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+            远程价格源
+          </div>
+          <div class="switch-row">
+            <div class="s-left">
+              <div class="s-title">自动拉取远程价格</div>
+              <div class="s-desc">按间隔随数据同步自动拉取，价格来源标记为「远程」；优先级：手动 &gt; 远程 &gt; 内置</div>
+            </div>
+            <div class="switch" :class="{ on: app.config.billing?.remotePricing?.enabled }" role="switch" :aria-checked="!!app.config.billing?.remotePricing?.enabled" @click="toggleRemotePricing"></div>
+          </div>
+          <div class="form-grid billing-form">
+            <div class="form-field" style="grid-column: 1 / -1">
+              <label>价格表网址（LiteLLM 兼容格式）</label>
+              <input class="f-input mono" v-model="app.config.billing.remotePricing.url" placeholder="https://…/model_prices_and_context_window.json" @blur="saveRemoteField" />
+            </div>
+            <div class="form-field" style="grid-column: 1 / 2">
+              <label>哈希校验网址（可选，远程无变化时短路由）</label>
+              <input class="f-input mono" v-model="app.config.billing.remotePricing.hashUrl" placeholder="https://…/model_prices_and_context_window.sha256" @blur="saveRemoteField" />
+            </div>
+            <div class="form-field" style="grid-column: 2 / 3">
+              <label>检查间隔（小时）</label>
+              <input class="f-input mono" type="number" min="1" step="1" v-model.number="app.config.billing.remotePricing.intervalHours" @blur="saveRemoteField" />
+            </div>
+          </div>
+          <div class="switch-row" style="border-top: none; padding-top: 2px">
+            <div class="s-left">
+              <div class="s-desc">
+                <template v-if="remoteStatus?.lastAt">上次拉取 {{ formatDateTime(remoteStatus.lastAt) }} · 命中 {{ remoteStatus.lastModels }} 个本地模型<span v-if="remoteMsg"> · </span></template>
+                <template v-else>尚未拉取过<span v-if="remoteMsg"> · </span></template>
+                <span v-if="remoteMsg" :style="{ color: remoteMsg.ok ? 'var(--ok)' : 'var(--err)' }">{{ remoteMsg.text }}</span>
+              </div>
+            </div>
+            <button class="btn-outline" :disabled="remotePulling" @click="pullRemoteNow">{{ remotePulling ? "拉取中…" : "立即拉取" }}</button>
+          </div>
+        </div>
     </div>
 
     <!-- 模型价格表 -->
@@ -301,7 +376,7 @@ onMounted(async () => {
           <thead><tr>
             <th>模型</th><th>供应商</th>
             <th class="num">输入 /M</th><th class="num">输出 /M</th><th class="num">缓存读 /M</th><th class="num">缓存写 /M</th>
-            <th>币种</th><th>现行版本</th><th style="text-align: right">操作</th>
+            <th>币种</th><th>来源</th><th>现行版本</th><th style="text-align: right">操作</th>
           </tr></thead>
           <tbody>
             <tr v-for="p in prices" :key="p.id" :class="{ 'tr-unpriced': !p.active }">
@@ -312,6 +387,7 @@ onMounted(async () => {
               <td class="num mono">{{ p.cacheReadPerM.toFixed(2) }}</td>
               <td class="num mono">{{ p.cacheWritePerM.toFixed(2) }}</td>
               <td><span class="pill" :class="p.currency === 'USD' ? 'ok' : 'blue'">{{ p.currency }}</span></td>
+              <td><span class="pill" :class="p.source === 'manual' ? 'blue' : p.source === 'remote' ? 'ok' : 'src-builtin'">{{ sourceLabel[p.source] || p.source }}</span></td>
               <td class="ver">
                 <template v-if="p.active"><b>{{ effLabel(p.effectiveFrom) }}</b> · {{ p.versions > 1 ? `${p.versions} 个历史版本` : "无历史" }}</template>
                 <template v-else><span class="pill warn">待生效 · {{ effLabel(p.effectiveFrom) }}</span></template>
@@ -323,7 +399,7 @@ onMounted(async () => {
               </td>
             </tr>
             <tr v-if="!prices.length">
-              <td colspan="9" style="text-align: center; color: var(--text-3); padding: 24px 0">
+              <td colspan="10" style="text-align: center; color: var(--text-3); padding: 24px 0">
                 还没有任何价格，点击「从价格源导入」或「新增模型」开始配置
               </td>
             </tr>
@@ -456,6 +532,7 @@ onMounted(async () => {
               <b>{{ effLabel(v.effectiveFrom) }}</b>
               {{ v.effectiveTo ? "至 " + formatDateTime(v.effectiveTo) : "· 至今" }}
               <span class="pill" :class="i === 0 ? 'blue' : ''" v-if="i === 0">现行</span>
+              <span class="pill" :class="v.source === 'manual' ? 'blue' : v.source === 'remote' ? 'ok' : 'src-builtin'" style="margin-left: 4px">{{ sourceLabel[v.source] || v.source }}</span>
               <span v-if="v.currency === 'USD'" class="pill ok" style="margin-left: 4px">USD</span>
             </div>
             <div class="vt-price mono">输入 {{ v.inputPerM.toFixed(2) }} · 输出 {{ v.outputPerM.toFixed(2) }} · 缓存读 {{ v.cacheReadPerM.toFixed(2) }}</div>
@@ -541,6 +618,7 @@ onMounted(async () => {
 .ver b { color: var(--text-2); font-weight: 600; }
 .mini-input { height: 30px; font-size: 12px; padding: 0 8px; width: 90px; }
 select.mini-input { width: 76px; }
+.pill.src-builtin { color: var(--text-3); background: var(--surface-3); }
 .formula-line { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 12px; color: var(--text-2); margin-bottom: 12px; }
 .formula-line code { font-family: "Cascadia Code", Consolas, monospace; font-size: 11.5px; color: var(--accent-strong); background: var(--accent-soft); padding: 1px 6px; border-radius: 5px; margin: 0 1px; }
 .formula-line .muted { color: var(--text-3); }

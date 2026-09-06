@@ -142,6 +142,13 @@ function defaultConfig() {
       displayCurrency: "CNY",
       usdToCny: 7.2,
       importProxy: "", // 价格源导入代理（留空=系统代理/直连）
+      // 远程价格源自动拉取（来源 remote，参考 sub2api 的 pricing.remote_url/hash_url）
+      remotePricing: {
+        enabled: false,
+        url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
+        hashUrl: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256",
+        intervalHours: 24,
+      },
     },
   };
 }
@@ -191,13 +198,23 @@ function loadConfig() {
     if (merged.webdav) merged.webdav.password = decryptPassword(merged.webdav.password);
     // 总量口径归一化：platform 选项从未实现（等效 compact），已从 UI 移除，旧配置值回退为 compact
     if (merged.totalMode !== "full" && merged.totalMode !== "compact") merged.totalMode = "compact";
-    // 计费配置归一化：币种只允许 CNY/USD，汇率必须为正数
+    // 计费配置归一化：币种只允许 CNY/USD，汇率必须为正数；远程价格源网址为空时回默认
     if (merged.billing) {
       if (merged.billing.displayCurrency !== "USD") merged.billing.displayCurrency = "CNY";
       const rate = Number(merged.billing.usdToCny);
       merged.billing.usdToCny = isFinite(rate) && rate > 0 ? rate : 7.2;
       if (typeof merged.billing.importProxy !== "string") merged.billing.importProxy = "";
       merged.billing.enabled = !!merged.billing.enabled;
+      const rp = merged.billing.remotePricing;
+      if (rp && typeof rp === "object") {
+        rp.enabled = !!rp.enabled;
+        rp.url = typeof rp.url === "string" && rp.url.trim() ? rp.url.trim() : defaultConfig().billing.remotePricing.url;
+        rp.hashUrl = typeof rp.hashUrl === "string" ? rp.hashUrl.trim() : "";
+        const hours = Number(rp.intervalHours);
+        rp.intervalHours = isFinite(hours) && hours >= 1 ? hours : 24;
+      } else {
+        merged.billing.remotePricing = defaultConfig().billing.remotePricing;
+      }
     }
     return merged;
   } catch (e) {

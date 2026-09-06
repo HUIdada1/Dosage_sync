@@ -38,6 +38,8 @@ const ALLOWED_COMMANDS = new Set([
   "get_unpriced_models",
   "import_prices_preview",
   "import_prices_apply",
+  "pull_remote_pricing",
+  "get_remote_pricing_status",
   // 其它
   "open_data_dir",
   "get_data_dir",

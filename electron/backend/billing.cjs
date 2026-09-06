@@ -23,6 +23,13 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1/models";
 const FETCH_TIMEOUT_MS = 20000;
 const PRICES_FILE = "usage-tracker/prices.json";
 
+// 远程价格源默认地址（参考 sub2api 的 pricing.remote_url / hash_url，LiteLLM 兼容格式）
+const REMOTE_PRICING_DEFAULTS = {
+  url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
+  hashUrl: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256",
+  intervalHours: 24,
+};
+
 // ===== 网络 =====
 
 async function doFetch(url, proxy) {
@@ -222,7 +229,66 @@ async function syncPrices(wd, deviceName) {
   return { action: "unchanged" };
 }
 
+// ===== 远程价格源自动拉取（来源 remote，参考 sub2api PricingService）=====
+
+/** 上次拉取状态（meta 记账） */
+function getRemotePricingStatus() {
+  return {
+    lastAt: Number(db.getMeta("remote_pricing_at") || 0) || null,
+    lastHash: db.getMeta("remote_pricing_hash") || null,
+    lastModels: Number(db.getMeta("remote_pricing_models") || 0) || null,
+  };
+}
+
+/**
+ * 从远程价格源拉取并应用（来源 remote）。借鉴 sub2api：
+ * 哈希比对短路由（远程没变就拉个哈希文件，省流量）→ 全量下载解析 →
+ * 只对「本地真实出现过用量」的模型入库（交集）→ 同价跳过 / 异价关旧段开新段。
+ * 任何失败向上抛出，由调用方记日志兜底（不影响数据同步）。
+ */
+async function pullRemotePricing(opts = {}) {
+  const url = String(opts.url || REMOTE_PRICING_DEFAULTS.url).trim();
+  const hashUrl = String(opts.hashUrl || "").trim();
+  if (!url) return { action: "skipped", reason: "未配置拉取网址" };
+
+  // 1. 哈希短路（force 时跳过，用于手动「立即拉取」）
+  let remoteHash = null;
+  if (hashUrl && !opts.force) {
+    try {
+      remoteHash = (await fetchText([hashUrl], opts.proxy)).text.trim();
+      if (remoteHash && remoteHash === db.getMeta("remote_pricing_hash")) {
+        return { action: "unchanged", hash: remoteHash };
+      }
+    } catch {
+      remoteHash = null; // 哈希拉取失败不阻断，直接尝试数据文件
+    }
+  }
+
+  // 2. 全量拉取 + 解析（LiteLLM 格式，USD/token）
+  const { text } = await fetchText([url], opts.proxy);
+  const parsed = parseLiteLLM(text);
+
+  // 3. 只取本地真实出现过用量的模型（交集），避免把数千个无关模型写进价格表
+  const usedModels = db.getAggregate("full", "model", null, null, null).map((r) => r.key);
+  const candidates = [];
+  for (const modelId of usedModels) {
+    const hit = parsed.get(modelId);
+    if (hit) candidates.push({ ...hit, providerId: null });
+  }
+
+  // 4. 应用（remote 来源，同价跳过 / 异价关旧段开新段）
+  const applied = db.applyRemotePricing(candidates);
+
+  // 5. 记账（哈希作为同步锚点；远程无哈希文件时退化为数据自身哈希）
+  const crypto = require("node:crypto");
+  const syncHash = remoteHash || crypto.createHash("sha256").update(text).digest("hex");
+  db.setMeta("remote_pricing_hash", syncHash);
+  db.setMeta("remote_pricing_at", String(Date.now()));
+  db.setMeta("remote_pricing_models", String(candidates.length));
+  return { action: "updated", total: parsed.size, ...applied, models: candidates.length, hash: syncHash };
+}
+
 module.exports = {
-  parseLiteLLM, parseOpenRouter, previewImport, applyImport, syncPrices,
-  LITELLM_URLS, OPENROUTER_URL, PRICES_FILE,
+  parseLiteLLM, parseOpenRouter, previewImport, applyImport, syncPrices, pullRemotePricing, getRemotePricingStatus,
+  LITELLM_URLS, OPENROUTER_URL, PRICES_FILE, REMOTE_PRICING_DEFAULTS,
 };

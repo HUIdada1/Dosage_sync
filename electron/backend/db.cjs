@@ -10,7 +10,7 @@ let _db = null;
 
 // 当前 schema 版本。旧库（user_version=0）首次打开时迁移到该版本；
 // 未来变更表结构时：SCHEMA_VERSION+1，并在 init() 的迁移块中追加对应 ALTER/重建步骤
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 /** 获取（惰性打开）单例连接 */
 function get() {
@@ -79,6 +79,7 @@ function init(db) {
     );
 
     -- 模型价格（时段版本化）：改价 = 关闭现行段 + 插入新段，历史段永久保留
+    -- source 三层来源：manual=手动（最高）| remote=远程拉取 | builtin=内置种子（兜底）
     CREATE TABLE IF NOT EXISTS model_price (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         provider_id TEXT,                       -- NULL = 不限供应商（通配）
@@ -91,15 +92,15 @@ function init(db) {
         effective_from INTEGER NOT NULL,        -- epoch ms（含），生效起
         effective_to INTEGER,                   -- epoch ms（不含）；NULL = 至今
         updated_at INTEGER NOT NULL,
-        updated_by TEXT
+        updated_by TEXT,
+        source TEXT NOT NULL DEFAULT 'manual'
     );
     CREATE INDEX IF NOT EXISTS idx_price_lookup ON model_price(model_id, effective_from);
-    -- 防重叠时段兜底（provider NULL 经 COALESCE 归一后才能进唯一索引）
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_price_period ON model_price(COALESCE(provider_id, ''), model_id, effective_from);
 
     -- 记录成本视图：按「记录发生时刻生效的最优匹配价」动态计费（价格修改后历史自动重算）
     -- 口径：净输入×输入价 + 缓存命中×缓存读价 + 缓存写入×缓存写价 + (输出+推理)×输出价
     -- 适配器口径锚点：input_tokens 含 cache_read_tokens（README 已实测），故净输入需相减
+    -- 匹配优先级：来源（manual 手动 > remote 远程 > builtin 种子）→ 供应商精确 → 生效时间最新
     CREATE VIEW IF NOT EXISTS v_record_cost AS
     SELECT r.*,
       ( COALESCE(mp.input_per_m, 0)      * (r.input_tokens - r.cache_read_tokens)
@@ -116,7 +117,9 @@ function init(db) {
         AND (p.provider_id IS NULL OR p.provider_id = r.provider_id)
         AND p.effective_from <= r.started_at
         AND (p.effective_to IS NULL OR p.effective_to > r.started_at)
-      ORDER BY (p.provider_id IS NOT NULL) DESC, p.effective_from DESC
+      ORDER BY CASE COALESCE(p.source, 'manual') WHEN 'manual' THEN 0 WHEN 'remote' THEN 1 ELSE 2 END,
+               (p.provider_id IS NOT NULL) DESC,
+               p.effective_from DESC
       LIMIT 1
     );
   `);
@@ -131,6 +134,17 @@ function init(db) {
     if (current < 2) {
       const n = db.prepare("SELECT COUNT(*) AS c FROM model_price").get().c;
       if (!n) seedDefaultPrices(db);
+    }
+    // 2 → 3：价格来源三层化（manual 手动 > remote 远程拉取 > builtin 内置种子）。
+    // 老库补 source 列（新库建表已带）；内置种子行标 builtin；唯一索引重建纳入 source。
+    if (current < 3) {
+      const cols = db.prepare("PRAGMA table_info(model_price)").all().map((c) => c.name);
+      if (!cols.includes("source")) {
+        db.exec("ALTER TABLE model_price ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'");
+      }
+      db.exec("UPDATE model_price SET source = 'builtin' WHERE updated_by = '内置默认'");
+      db.exec("DROP INDEX IF EXISTS idx_price_period");
+      db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_price_period ON model_price(COALESCE(provider_id, ''), model_id, source, effective_from)");
     }
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
@@ -166,7 +180,7 @@ const DEFAULT_PRICES = [
 /** 写入内置默认价格（仅建库/迁移且价格表为空时调用），effective_from=0 使全部历史立即可计价 */
 function seedDefaultPrices(db) {
   const stmt = db.prepare(
-    "INSERT INTO model_price (provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, updated_at, updated_by) VALUES (NULL,?,?,?,?,0,?,0,?,'内置默认')"
+    "INSERT INTO model_price (provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, updated_at, updated_by, source) VALUES (NULL,?,?,?,?,0,?,0,?,'内置默认','builtin')"
   );
   const now = Date.now();
   db.exec("BEGIN");
@@ -336,8 +350,9 @@ const num0 = (v) => {
 };
 
 /**
- * 保存价格：与 [from, ∞) 重叠的既有段，起点更晚的直接删除（覆盖重复配置/导入），
- * 起点更早的把终点收口到 from；历史段（终点 ≤ from）不动。事务内完成，时段永不重叠。
+ * 保存价格：与 [from, ∞) 重叠的【同来源】既有段，起点更晚的直接删除（覆盖重复配置/导入），
+ * 起点更早的把终点收口到 from；历史段（终点 ≤ from）与其它来源的段不动。事务内完成，时段永不重叠。
+ * source：UI/导入路径写入 manual；远程拉取走 applyRemotePricing（remote）。
  */
 function savePrice(entry, updatedBy = "") {
   const db = get();
@@ -346,17 +361,18 @@ function savePrice(entry, updatedBy = "") {
   const from = Math.max(0, Math.floor(Number(entry.effectiveFrom) || 0));
   const providerId = entry.providerId ? String(entry.providerId) : null;
   const currency = entry.currency === "USD" ? "USD" : "CNY";
+  const source = entry.source === "remote" ? "remote" : "manual";
   db.exec("BEGIN");
   try {
     db.prepare(
-      "DELETE FROM model_price WHERE model_id = ? AND COALESCE(provider_id, '') = COALESCE(?, '') AND effective_from >= ?"
-    ).run(modelId, providerId, from);
+      "DELETE FROM model_price WHERE model_id = ? AND COALESCE(provider_id, '') = COALESCE(?, '') AND COALESCE(source, 'manual') = ? AND effective_from >= ?"
+    ).run(modelId, providerId, source, from);
     db.prepare(
-      "UPDATE model_price SET effective_to = ? WHERE model_id = ? AND COALESCE(provider_id, '') = COALESCE(?, '') AND effective_from < ? AND (effective_to IS NULL OR effective_to > ?)"
-    ).run(from, modelId, providerId, from, from);
+      "UPDATE model_price SET effective_to = ? WHERE model_id = ? AND COALESCE(provider_id, '') = COALESCE(?, '') AND COALESCE(source, 'manual') = ? AND effective_from < ? AND (effective_to IS NULL OR effective_to > ?)"
+    ).run(from, modelId, providerId, source, from, from);
     db.prepare(
-      "INSERT INTO model_price (provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by) VALUES (?,?,?,?,?,?,?,?,NULL,?,?)"
-    ).run(providerId, modelId, num0(entry.inputPerM), num0(entry.outputPerM), num0(entry.cacheReadPerM), num0(entry.cacheWritePerM), currency, from, Date.now(), updatedBy);
+      "INSERT INTO model_price (provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by, source) VALUES (?,?,?,?,?,?,?,?,NULL,?,?,?)"
+    ).run(providerId, modelId, num0(entry.inputPerM), num0(entry.outputPerM), num0(entry.cacheReadPerM), num0(entry.cacheWritePerM), currency, from, Date.now(), updatedBy, source);
     // 计费价格 LWW 时钟（与行内 updated_at 解耦：删除操作也要推进时钟，否则删光后被远端旧价覆盖）
     setMeta("prices_local_updated", String(Date.now()));
     db.exec("COMMIT");
@@ -366,7 +382,7 @@ function savePrice(entry, updatedBy = "") {
   }
 }
 
-/** 删除某模型（含供应商维度）的全部价格版本 */
+/** 删除某模型（含供应商维度）的全部价格版本（任何来源，含内置/远程） */
 function deleteModelPrices(providerId, modelId) {
   get().prepare(
     "DELETE FROM model_price WHERE model_id = ? AND COALESCE(provider_id, '') = COALESCE(?, '')"
@@ -388,26 +404,34 @@ function priceRow(row) {
     effectiveTo: row.effective_to ?? null,
     updatedAt: row.updated_at,
     updatedBy: row.updated_by,
+    source: row.source ?? "manual",
   };
 }
 
 /** 全部价格版本（价格历史抽屉 / WebDAV 同步导出用） */
 function listAllPrices() {
   return get().prepare(
-    "SELECT id, provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by FROM model_price ORDER BY model_id, COALESCE(provider_id,''), effective_from"
+    "SELECT id, provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by, source FROM model_price ORDER BY model_id, COALESCE(provider_id,''), effective_from"
   ).all().map(priceRow);
 }
 
-/** 每个模型（+供应商维度）的最新价格段（价格表页展示），附版本数与是否生效中 */
+/** 每个模型（+供应商维度）的最新价格段（价格表页展示），附版本数与是否生效中。
+ *  取行语义与 v_record_cost 匹配一致：组内按「来源优先级 → 生效时间最新」取最优行（窗口函数）。 */
 function listCurrentPrices() {
   const now = nowMs();
   return get().prepare(
-    `SELECT p.*, v.cnt AS versions FROM model_price p
-     JOIN (SELECT COALESCE(provider_id,'') AS pv, model_id AS m, MAX(effective_from) AS mf FROM model_price GROUP BY pv, m) x
-       ON COALESCE(p.provider_id,'') = x.pv AND p.model_id = x.m AND p.effective_from = x.mf
-     JOIN (SELECT COALESCE(provider_id,'') AS pv, model_id AS m, COUNT(*) AS cnt FROM model_price GROUP BY pv, m) v
-       ON COALESCE(p.provider_id,'') = v.pv AND p.model_id = v.m
-     ORDER BY p.model_id, COALESCE(p.provider_id,'')`
+    `SELECT * FROM (
+       SELECT p.id, p.provider_id, p.model_id, p.input_per_m, p.output_per_m, p.cache_read_per_m, p.cache_write_per_m,
+              p.currency, p.effective_from, p.effective_to, p.updated_at, p.updated_by, p.source,
+              COUNT(*) OVER (PARTITION BY COALESCE(p.provider_id,''), p.model_id) AS versions,
+              ROW_NUMBER() OVER (
+                PARTITION BY COALESCE(p.provider_id,''), p.model_id
+                ORDER BY CASE COALESCE(p.source,'manual') WHEN 'manual' THEN 0 WHEN 'remote' THEN 1 ELSE 2 END,
+                         p.effective_from DESC
+              ) AS rn
+       FROM model_price p
+     ) WHERE rn = 1
+     ORDER BY model_id, COALESCE(provider_id,'')`
   ).all().map((row) => ({
     ...priceRow(row),
     versions: row.versions,
@@ -418,7 +442,7 @@ function listCurrentPrices() {
 /** 某模型的全部价格版本（历史时间线，时间倒序） */
 function listPriceVersions(providerId, modelId) {
   return get().prepare(
-    "SELECT id, provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by FROM model_price WHERE model_id = ? AND COALESCE(provider_id,'') = COALESCE(?, '') ORDER BY effective_from DESC"
+    "SELECT id, provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by, source FROM model_price WHERE model_id = ? AND COALESCE(provider_id,'') = COALESCE(?, '') ORDER BY effective_from DESC"
   ).all(modelId, providerId || null).map(priceRow);
 }
 
@@ -442,7 +466,7 @@ function replacePrices(prices, clockMs) {
   try {
     db.prepare("DELETE FROM model_price").run();
     const stmt = db.prepare(
-      "INSERT INTO model_price (provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+      "INSERT INTO model_price (provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by, source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
     );
     for (const p of Array.isArray(prices) ? prices : []) {
       if (!p || typeof p.modelId !== "string" || !p.modelId) continue;
@@ -453,7 +477,8 @@ function replacePrices(prices, clockMs) {
         Math.max(0, Math.floor(Number(p.effectiveFrom) || 0)),
         p.effectiveTo == null ? null : Number(p.effectiveTo) || null,
         Number(p.updatedAt) || Date.now(),
-        typeof p.updatedBy === "string" ? p.updatedBy : ""
+        typeof p.updatedBy === "string" ? p.updatedBy : "",
+        ["manual", "remote", "builtin"].includes(p.source) ? p.source : "manual"
       );
     }
     setMeta("prices_local_updated", String(Math.floor(Number(clockMs) || Date.now())));
@@ -462,6 +487,50 @@ function replacePrices(prices, clockMs) {
     db.exec("ROLLBACK");
     throw e;
   }
+}
+
+/** 远程价格行与候选条目的同价判断（四价 + 币种） */
+function remotePriceSame(row, e) {
+  return row.currency === e.currency && row.effective_to === null &&
+    ["input_per_m", "output_per_m", "cache_read_per_m", "cache_write_per_m"].every(
+      (col, i) => Math.abs((row[col] ?? 0) - [e.inputPerM, e.outputPerM, e.cacheReadPerM, e.cacheWritePerM][i]) < 1e-9
+    );
+}
+
+/**
+ * 应用远程价格源（自动拉取，来源 remote）：只对「本地出现过用量」的模型生效。
+ * 逐模型：无 remote 段 → 插入首段（拉取时刻起生效，历史回落 builtin/既有段）；
+ * 同价且现行 → 跳过；异价 → 关旧 remote 段 + 开新段。不触碰 manual/builtin 行。
+ */
+function applyRemotePricing(entries) {
+  const db = get();
+  const now = Date.now();
+  let added = 0, updated = 0, skipped = 0;
+  db.exec("BEGIN");
+  try {
+    const latest = db.prepare(
+      "SELECT id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_to FROM model_price WHERE model_id = ? AND COALESCE(provider_id,'') = COALESCE(?,'') AND COALESCE(source,'manual') = 'remote' ORDER BY effective_from DESC LIMIT 1"
+    );
+    const closeOld = db.prepare("UPDATE model_price SET effective_to = ? WHERE id = ?");
+    const ins = db.prepare(
+      "INSERT INTO model_price (provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by, source) VALUES (NULL,?,?,?,?,?,?,?,NULL,?,'远程价格源','remote')"
+    );
+    for (const e of Array.isArray(entries) ? entries : []) {
+      if (!e || !e.modelId) continue;
+      const cur = latest.get(e.modelId, e.providerId ?? null);
+      if (cur && remotePriceSame(cur, e)) { skipped++; continue; }
+      if (cur) closeOld.run(now, cur.id);
+      ins.run(e.modelId, num0(e.inputPerM), num0(e.outputPerM), num0(e.cacheReadPerM), num0(e.cacheWritePerM),
+        e.currency === "USD" ? "USD" : "CNY", now, now);
+      if (cur) updated++; else added++;
+    }
+    setMeta("prices_local_updated", String(now));
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return { added, updated, skipped };
 }
 
 function recordScope(source = null, deviceId = null) {
@@ -955,5 +1024,5 @@ module.exports = {
   setBillingFx,
   savePrice, deleteModelPrices,
   listAllPrices, listCurrentPrices, listPriceVersions, listUnpricedModels,
-  replacePrices,
+  replacePrices, applyRemotePricing,
 };

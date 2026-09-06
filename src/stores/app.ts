@@ -19,7 +19,18 @@ const defaultConfig: AppConfig = {
   schedule: { hourly: false, hourlyInterval: 1, daily: false, dailyTime: "23:30", autoStart: false, minimizeToTray: true, notifyOnSuccess: false },
   totalMode: "full",
   theme: "light",
-  billing: { enabled: false, displayCurrency: "CNY" as const, usdToCny: 7.2, importProxy: "" },
+  billing: {
+    enabled: false,
+    displayCurrency: "CNY" as const,
+    usdToCny: 7.2,
+    importProxy: "",
+    remotePricing: {
+      enabled: false,
+      url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
+      hashUrl: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256",
+      intervalHours: 24,
+    },
+  },
 };
 
 export const useAppStore = defineStore("app", {

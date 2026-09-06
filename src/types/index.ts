@@ -156,6 +156,15 @@ export interface BillingConfig {
   displayCurrency: "CNY" | "USD"; // 显示币种
   usdToCny: number; // USD→CNY 汇率（手动，改后全部历史费用即时重算）
   importProxy: string; // 价格源导入代理（留空=系统代理/直连）
+  remotePricing: RemotePricingConfig; // 远程价格源自动拉取（来源 remote）
+}
+
+/** 远程价格源（参考 sub2api pricing.remote_url/hash_url；三层来源中优先级居中：手动 > 远程 > 内置） */
+export interface RemotePricingConfig {
+  enabled: boolean;
+  url: string; // 价格表 JSON 地址（LiteLLM 兼容格式）
+  hashUrl: string; // 哈希校验文件地址（可选，远程无变化时短路由）
+  intervalHours: number; // 检查间隔（小时，随数据同步顺带触发）
 }
 
 /** 同步日志 */
@@ -205,6 +214,7 @@ export interface PriceEntry {
   effectiveTo: number | null; // epoch ms（不含）；null = 至今
   updatedAt: number;
   updatedBy: string;
+  source: "manual" | "remote" | "builtin"; // manual=手动 > remote=远程拉取 > builtin=内置种子
 }
 
 /** 价格表行：每个模型（+供应商维度）的最新版本段 */

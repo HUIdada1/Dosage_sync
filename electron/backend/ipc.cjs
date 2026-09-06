@@ -200,6 +200,29 @@ function register(ctx) {
 
   ipcMain.handle("get_unpriced_models", () => db.listUnpricedModels());
 
+  ipcMain.handle("pull_remote_pricing", async (_e, args) => {
+    try {
+      const cfg = config.loadConfig();
+      const rp = (cfg.billing && cfg.billing.remotePricing) || {};
+      if (!rp.url) return { ok: false, message: "未配置拉取网址" };
+      const r = await billing.pullRemotePricing({
+        url: rp.url, hashUrl: rp.hashUrl, proxy: cfg.billing.importProxy || "", force: !!(args && args.force),
+      });
+      if (r.action === "unchanged") return { ok: true, message: "远程价格源无变化，本地价格已是最新" };
+      if (r.action === "skipped") return { ok: false, message: r.reason || "已跳过" };
+      return { ok: true, message: `拉取完成：新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.skipped}（本地 ${r.models} 个模型命中，远端共 ${r.total} 个）` };
+    } catch (e) {
+      return { ok: false, message: `拉取失败：${e.message}` };
+    }
+  });
+
+  ipcMain.handle("get_remote_pricing_status", () => {
+    const cfg = config.loadConfig();
+    const rp = (cfg.billing && cfg.billing.remotePricing) || {};
+    const st = billing.getRemotePricingStatus();
+    return { ...rp, ...st };
+  });
+
   ipcMain.handle("import_prices_preview", async (_e, args) => {
     try {
       const cfg = config.loadConfig();

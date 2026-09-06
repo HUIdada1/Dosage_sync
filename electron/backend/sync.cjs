@@ -195,6 +195,22 @@ async function run(cfg) {
       } catch (e) {
         log("upload", "warn", "价格表同步失败（不影响数据同步）", e.message);
       }
+      // 远程价格源自动拉取（来源 remote）：按配置间隔检查，拉取失败仅记日志
+      try {
+        const rp = cfg.billing && cfg.billing.remotePricing;
+        if (rp && rp.enabled && rp.url) {
+          const intervalMs = Math.max(1, Number(rp.intervalHours) || 24) * 3600000;
+          const lastAt = Number(db.getMeta("remote_pricing_at") || 0);
+          if (Date.now() - lastAt > intervalMs) {
+            const r = await billing.pullRemotePricing({ ...rp, proxy: cfg.billing.importProxy || "" });
+            if (r.action === "updated") {
+              log("merge", "info", `远程价格源已更新：新增 ${r.added} · 调价 ${r.updated} · 未变 ${r.skipped}（本地 ${r.models} 个模型命中）`);
+            }
+          }
+        }
+      } catch (e) {
+        log("upload", "warn", "远程价格源拉取失败（不影响数据同步，下轮重试）", e.message);
+      }
       // 设备元数据。上传前做设备 ID 碰撞探测：远端设备文件的写入实例既不是本次进程、
       // 也不是本机上次上传的进程时，说明同一设备 ID 有多台电脑在写（克隆/复制数据目录），
       // 双方日分片会互相覆盖——写 warn 日志告警但不阻断同步。

@@ -100,7 +100,15 @@ const mock = {
               schedule: { hourly: false, hourlyInterval: 1, daily: false, dailyTime: "23:30", autoStart: false, minimizeToTray: true, notifyOnSuccess: false },
               totalMode: "full",
               theme: "light",
-              billing: { enabled: true, displayCurrency: "CNY", usdToCny: 7.2, importProxy: "" },
+              billing: {
+              enabled: true, displayCurrency: "CNY", usdToCny: 7.2, importProxy: "",
+              remotePricing: {
+                enabled: true,
+                url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
+                hashUrl: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256",
+                intervalHours: 24,
+              },
+            },
             });
             break;
           case "save_config": resolve({ ok: true, message: "设置保存成功" }); break;
@@ -278,6 +286,7 @@ const mock = {
               inputPerM: p.i, outputPerM: p.o, cacheReadPerM: p.cr, cacheWritePerM: 0,
               currency: p.cur, effectiveFrom: 0, effectiveTo: null,
               updatedAt: Date.now() - 86400000, updatedBy: "内置默认",
+              source: (idx % 3 === 0 ? "manual" : idx % 3 === 1 ? "remote" : "builtin") as "manual" | "remote" | "builtin",
               versions: 1, active: true,
             })));
             break;
@@ -303,6 +312,15 @@ const mock = {
             });
             break;
           case "import_prices_apply": resolve({ ok: true, message: `已导入 ${(args.items || []).length} 条价格，历史费用已重算` }); break;
+          case "pull_remote_pricing": resolve({ ok: true, message: "拉取完成：新增 0 · 调价 2 · 未变 5（本地 7 个模型命中，远端共 3561 个）" }); break;
+          case "get_remote_pricing_status":
+            resolve({
+              enabled: true,
+              url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json",
+              hashUrl: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256",
+              intervalHours: 24, lastAt: Date.now() - 3600000, lastHash: "a1b2c3d4", lastModels: 7,
+            });
+            break;
           default: resolve(null);
         }
       }, 60);
