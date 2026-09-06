@@ -6,6 +6,7 @@ dist-electron/
 # 构建产物
 target/
 release/
+release2/
 
 # 日志
 *.log
