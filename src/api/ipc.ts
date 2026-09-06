@@ -40,7 +40,7 @@ export const healthSource = () => call<SourceHealth[]>("health_source");
 export const getSummary = (mode: TotalMode, deviceId?: string | null, source?: string | null) => call<Summary>("get_summary", { mode, deviceId, source });
 export const getDevices = (mode: TotalMode, source?: string | null) => call<DeviceMeta[]>("get_devices", { mode, source });
 export const getDeviceBreakdowns = (mode: TotalMode, deviceId?: string | null, source?: string | null) => call<DeviceBreakdown[]>("get_device_breakdowns", { mode, deviceId, source });
-export const getTrend = (mode: TotalMode, days: number, deviceId?: string | null, source?: string | null) => call<{ date: string; total: number; models?: Record<string, number> }[]>("get_trend", { mode, days, deviceId, source });
+export const getTrend = (mode: TotalMode, days: number, deviceId?: string | null, source?: string | null) => call<{ date: string; total: number; cost: number; models?: Record<string, number> }[]>("get_trend", { mode, days, deviceId, source });
 export const getHeatmap = (mode: TotalMode, start: string, end: string, deviceId?: string | null, source?: string | null) => call<{ date: string; total: number }[]>("get_heatmap", { mode, start, end, deviceId, source });
 export const getAggregate = (mode: TotalMode, dim: "model" | "provider" | "device" | "source", from: number | null, to: number | null, source?: string | null) =>
   call<AggregateRow[]>("get_aggregate", { mode, dim, from, to, source });
