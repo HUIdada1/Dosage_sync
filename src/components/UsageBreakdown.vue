@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { DeviceBreakdown, Summary } from "../types";
+import type { DeviceBreakdown } from "../types";
 import { useAppStore } from "../stores/app";
 import { formatInteger, formatPercent, formatNumber, formatCost } from "../composables/useFormat";
 
-const props = defineProps<{ summary: Summary | DeviceBreakdown; deviceName?: string; isLocal?: boolean }>();
+const props = defineProps<{ summary: DeviceBreakdown; deviceName?: string; isLocal?: boolean }>();
 const app = useAppStore();
 
 const items = computed(() => {
@@ -22,6 +22,7 @@ const items = computed(() => {
 const total = computed(() => items.value.reduce((s, i) => s + i.value, 0) || 1);
 const totalTokens = computed(() => props.summary.totalTokens);
 const cacheHitRate = computed(() => props.summary.inputTokens > 0 ? props.summary.cacheReadTokens / props.summary.inputTokens : 0);
+const currency = computed(() => app.config.billing?.displayCurrency || "CNY");
 </script>
 
 <template>
@@ -45,8 +46,8 @@ const cacheHitRate = computed(() => props.summary.inputTokens > 0 ? props.summar
       <div class="hr-val mono">{{ formatPercent(cacheHitRate) }}</div>
       <div class="hr-sub">
         命中 {{ formatNumber(summary.cacheReadTokens) }} / 输入 {{ formatNumber(summary.inputTokens) }} · 缓存复用计费更低
-        <template v-if="app.config.billing?.enabled && (summary as any).cost != null">
-          · 费用 <b class="mono" style="color: var(--text-2)">{{ formatCost((summary as any).cost) }}</b>
+        <template v-if="app.config.billing?.enabled && summary.cost != null">
+          · 费用 <b class="mono" style="color: var(--text-2)">{{ formatCost(summary.cost, 2, currency) }}</b>
         </template>
       </div>
     </div>

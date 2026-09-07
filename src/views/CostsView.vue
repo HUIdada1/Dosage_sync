@@ -93,6 +93,10 @@ watch(() => app.sync.running, (now) => {
   if (wasRunning && !now) loadAll();
   wasRunning = now;
 });
+// 在计费规则页改价/导入后切回本页时刷新（视图 v-show 常驻，切页不触发 onMounted）
+watch(() => app.activePage, (p) => {
+  if (p === "costs") loadAll();
+});
 
 function goBilling() {
   app.setPage("billing");

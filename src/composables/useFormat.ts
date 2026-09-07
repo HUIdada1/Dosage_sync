@@ -21,11 +21,12 @@ export function formatPercent(rate: number, digits = 1): string {
   return (rate * 100).toFixed(digits) + "%";
 }
 
-/** 费用：聚合卡显示 2 位（¥1,234.56），明细/小字传小数位 4（¥0.0182） */
-export function formatCost(n: number | null | undefined, digits = 2): string {
+/** 费用：聚合卡显示 2 位（¥1,234.56），明细/小字传小数位 4（¥0.0182）；符号随显示币种（CNY=¥ / USD=$） */
+export function formatCost(n: number | null | undefined, digits = 2, currency = "CNY"): string {
   const v = Number(n);
   if (!isFinite(v)) return "—";
-  return "¥" + v.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  const symbol = currency === "USD" ? "$" : "¥";
+  return symbol + v.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
 /** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 */

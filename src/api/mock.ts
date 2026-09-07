@@ -225,15 +225,18 @@ const mock = {
             const dim = args.dim || "model";
             const map: Record<string, any> = {};
             allRecords.filter((r) => !args.source || r.source === args.source).forEach((r) => {
-              const key = dim === "provider" ? r.providerId : dim === "model" ? r.modelId : dim === "source" ? r.source : r.deviceName;
-              if (!map[key]) map[key] = { key, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, count: 0, cost: 0, unpricedRecords: 0 };
+              // 设备维度按 deviceId 分组（与后端一致，防同名合并），展示时取 deviceName
+              const key = dim === "provider" ? r.providerId : dim === "model" ? r.modelId : dim === "source" ? r.source : r.deviceId;
+              if (!map[key]) map[key] = { key, name: r.deviceName, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, count: 0, cost: 0, unpricedRecords: 0 };
               map[key].inputTokens += r.inputTokens; map[key].outputTokens += r.outputTokens;
               map[key].reasoningTokens += r.reasoningTokens; map[key].cacheReadTokens += r.cacheReadTokens;
               map[key].cacheCreationTokens += r.cacheCreationTokens;
               map[key].totalTokens += calcTotal(r, mode); map[key].count++;
               map[key].cost += calcCost(r);
             });
-            resolve(Object.values(map).sort((a: any, b: any) => b.totalTokens - a.totalTokens));
+            const out = Object.values(map).sort((a: any, b: any) => b.totalTokens - a.totalTokens);
+            if (dim === "device") out.forEach((e: any) => { e.key = e.name; });
+            resolve(out);
             break;
           }
           case "get_records": {

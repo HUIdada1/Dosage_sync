@@ -73,6 +73,11 @@ watch(() => app.sync.running, (now) => {
   wasRunning = now;
 });
 
+// 在计费规则页改价/导入后切回总览时刷新（费用字段随价格版本重算，视图常驻需手动触发）
+watch(() => app.activePage, (p) => {
+  if (p === "overview" && activeSourceEnabled.value) usage.loadOverview();
+});
+
 async function changeRange(days: number) {
   range.value = days;
   await usage.loadTrend(days);

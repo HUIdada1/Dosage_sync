@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, reactive, watch } from "vue";
+import { onMounted, ref, reactive, watch, computed } from "vue";
 import { useUsageStore } from "../stores/usage";
 import { useAppStore } from "../stores/app";
 import { formatInteger, formatDateTime, formatCost } from "../composables/useFormat";
@@ -9,6 +9,9 @@ import type { UsageRecord } from "../types";
 
 const usage = useUsageStore();
 const app = useAppStore();
+
+// 费用列/抽屉的货币符号跟随计费显示币种
+const currency = computed(() => app.config.billing?.displayCurrency || "CNY");
 
 const filter = reactive({
   from: "", // "YYYY-MM-DD"，空为不限
@@ -105,6 +108,11 @@ watch(() => app.sync.running, (now, prev) => {
   }
 });
 
+// 在计费规则页改价/导入后切回明细时刷新（费用列随价格版本重算，视图常驻需手动触发）
+watch(() => app.activePage, (p) => {
+  if (p === "detail") load();
+});
+
 function pickModel(e: Event) { filter.model = (e.target as HTMLSelectElement).value || null; page.value = 0; load(); }
 function pickProvider(e: Event) { filter.provider = (e.target as HTMLSelectElement).value || null; page.value = 0; load(); }
 function pickDevice(e: Event) { filter.device = (e.target as HTMLSelectElement).value || null; page.value = 0; load(); }
@@ -142,7 +150,7 @@ function openRecord(r: UsageRecord) {
     { k: "缓存写入", v: formatInteger(r.cacheCreationTokens) },
     // 费用按记录发生时刻的价格版本计算；原生为该模型计费币种金额
     ...(billingOn ? [
-      { k: "费用", v: r.priced ? formatCost(r.costDisplay, 6) : "未配置价格" },
+      { k: "费用", v: r.priced ? formatCost(r.costDisplay, 6, currency.value) : "未配置价格" },
       { k: "费用（原生币种）", v: r.priced ? `${(r.costNative ?? 0).toFixed(6)} ${r.costCurrency || ""}` : "—" },
     ] : []),
     { k: "状态", v: r.status },
@@ -199,7 +207,7 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
               <td class="num mono">{{ formatInteger(r.reasoningTokens) }}</td>
               <td class="num mono">{{ formatInteger(r.cacheReadTokens) }}</td>
               <td v-if="app.config.billing?.enabled" class="num mono" :title="r.priced ? `原生 ${(r.costNative ?? 0).toFixed(6)} ${r.costCurrency || ''}` : '该模型未配置价格'">
-                <span v-if="r.priced" class="mono">{{ formatCost(r.costDisplay, 4) }}</span>
+                <span v-if="r.priced" class="mono">{{ formatCost(r.costDisplay, 4, currency) }}</span>
                 <span v-else style="color: var(--text-3)">—</span>
               </td>
               <td><span class="pill" :class="statusText[r.status]?.cls || 'blue'">{{ statusText[r.status]?.label || r.status }}</span></td>

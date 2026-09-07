@@ -107,6 +107,13 @@ async function setHourlyInterval(e: Event) {
     await autoSave();
   }
 }
+async function setDailyTime(e: Event) {
+  const v = (e.target as HTMLInputElement).value;
+  if (/^\d{2}:\d{2}$/.test(v)) {
+    cfg.schedule.dailyTime = v;
+    await autoSave();
+  }
+}
 async function exportData(fmt: "csv" | "json") {
   // 设置页无筛选上下文，导出全部明细；按筛选导出请到「用量明细」页
   const r = await api.exportData(fmt);
@@ -199,7 +206,7 @@ async function resetCache() {
           调度
         </div>
         <div class="switch-row"><div class="s-left"><div class="s-title">每小时同步</div><div class="s-desc">{{ cfg.schedule.hourly ? `每 ${cfg.schedule.hourlyInterval} 小时自动上传本机并拉取他机` : "关闭中，开启后自动上传本机并拉取他机" }}</div></div><div style="display:flex;align-items:center;gap:10px"><select v-if="cfg.schedule.hourly" class="f-select" style="width:110px" :value="String(cfg.schedule.hourlyInterval || 1)" @change="setHourlyInterval"><option v-for="n in hourlyIntervals" :key="n" :value="String(n)">{{ n }} 小时</option></select><div class="switch" :class="{ on: cfg.schedule.hourly }" @click="toggleSchedule('hourly')"></div></div></div>
-        <div class="switch-row"><div class="s-left"><div class="s-title">每天固定时间</div><div class="s-desc">每天 {{ cfg.schedule.dailyTime }} 同步一次（错过自动补跑）</div></div><div class="switch" :class="{ on: cfg.schedule.daily }" @click="toggleSchedule('daily')"></div></div>
+        <div class="switch-row"><div class="s-left"><div class="s-title">每天固定时间</div><div class="s-desc">每天 {{ cfg.schedule.dailyTime }} 同步一次（错过自动补跑）</div></div><div style="display:flex;align-items:center;gap:10px"><input v-if="cfg.schedule.daily" type="time" class="f-input" style="width:110px" :value="cfg.schedule.dailyTime" @change="setDailyTime" /><div class="switch" :class="{ on: cfg.schedule.daily }" @click="toggleSchedule('daily')"></div></div></div>
         <div class="switch-row">
           <div class="s-left"><div class="s-title">开机自启</div><div class="s-desc">{{ isPortable ? "便携版不支持开机自启（注册的会是临时副本）" : "登录 Windows 后自动运行" }}</div></div>
           <div class="switch" :class="{ on: cfg.schedule.autoStart, disabled: isPortable }" :style="isPortable ? 'opacity:.4' : ''" @click="toggleAutoStart"></div>

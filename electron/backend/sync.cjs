@@ -348,6 +348,8 @@ async function run(cfg) {
         if (!mergedDevices.has(p.other)) mergedDevices.add(p.other);
         emit({ percent: 55 + Math.floor((idx + 1) / Math.max(pending.length, 1) * 30) });
       }
+      // 无待拉取分片（全部已合并/自产）时循环不执行，补发进度避免 55% 直跳 90%
+      if (pending.length === 0) emit({ percent: 85 });
 
       // 设备元数据
       for (const other of deviceFiles) {

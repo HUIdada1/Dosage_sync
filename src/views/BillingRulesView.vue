@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, reactive, computed } from "vue";
+import { onMounted, ref, reactive, computed, watch } from "vue";
 import { useAppStore } from "../stores/app";
 import { formatNumber, formatInteger, formatDateTime } from "../composables/useFormat";
 import * as api from "../api/ipc";
@@ -269,6 +269,16 @@ async function applyImport() {
 
 onMounted(async () => {
   await Promise.all([loadPrices(), loadUnpriced(), loadRemoteStatus()]);
+});
+
+// 视图常驻：同步结束（他机价格表合并 / 远程价格源顺带拉取）或切回本页时刷新
+let wasRunning = app.sync.running;
+watch(() => app.sync.running, (now) => {
+  if (wasRunning && !now) { loadPrices(); loadUnpriced(); loadRemoteStatus(); }
+  wasRunning = now;
+});
+watch(() => app.activePage, (p) => {
+  if (p === "billing") { loadPrices(); loadUnpriced(); loadRemoteStatus(); }
 });
 </script>
 

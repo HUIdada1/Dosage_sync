@@ -509,7 +509,7 @@ function applyRemotePricing(entries) {
   db.exec("BEGIN");
   try {
     const latest = db.prepare(
-      "SELECT id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_to FROM model_price WHERE model_id = ? AND COALESCE(provider_id,'') = COALESCE(?,'') AND COALESCE(source,'manual') = 'remote' ORDER BY effective_from DESC LIMIT 1"
+      "SELECT id, effective_from, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_to FROM model_price WHERE model_id = ? AND COALESCE(provider_id,'') = COALESCE(?,'') AND COALESCE(source,'manual') = 'remote' ORDER BY effective_from DESC LIMIT 1"
     );
     const closeOld = db.prepare("UPDATE model_price SET effective_to = ? WHERE id = ?");
     const ins = db.prepare(
@@ -519,9 +519,11 @@ function applyRemotePricing(entries) {
       if (!e || !e.modelId) continue;
       const cur = latest.get(e.modelId, e.providerId ?? null);
       if (cur && remotePriceSame(cur, e)) { skipped++; continue; }
-      if (cur) closeOld.run(now, cur.id);
+      // 新段起点：与旧段同毫秒时 +1ms，避开 (provider,model,source,effective_from) 唯一索引
+      const from = cur ? Math.max(now, cur.effective_from + 1) : now;
+      if (cur) closeOld.run(from, cur.id);
       ins.run(e.modelId, num0(e.inputPerM), num0(e.outputPerM), num0(e.cacheReadPerM), num0(e.cacheWritePerM),
-        e.currency === "USD" ? "USD" : "CNY", now, now);
+        e.currency === "USD" ? "USD" : "CNY", from, from);
       if (cur) updated++; else added++;
     }
     setMeta("prices_local_updated", String(now));
@@ -771,10 +773,13 @@ function getHeatmap(mode, startDate, endDate, targetDeviceId = null, source = nu
 }
 
 function getAggregate(mode, dim, from, to, source = null) {
-  const dimCol = dim === "provider" ? "provider_id" : dim === "device" ? "device_name" : dim === "source" ? "source" : "model_id";
+  // 设备维度按 device_id 分组，避免两台同名电脑被合并；展示名取 device_name（同 ID 行名一致，upsertDevice 已保证）
+  const isDevice = dim === "device";
+  const dimCol = isDevice ? "device_id" : dim === "provider" ? "provider_id" : dim === "source" ? "source" : "model_id";
+  const dimSel = isDevice ? `${dimCol} AS k, MAX(device_name) AS kName` : `${dimCol} AS k`;
   const extra = extraExpr(mode);
   const rows = get().prepare(
-    `SELECT ${dimCol} AS k,
+    `SELECT ${dimSel},
             SUM(input_tokens + output_tokens${extra}) AS total,
             SUM(input_tokens) AS inputTokens, SUM(output_tokens) AS outputTokens,
             SUM(reasoning_tokens) AS reasoningTokens, SUM(cache_read_tokens) AS cacheReadTokens,
@@ -803,7 +808,7 @@ function getAggregate(mode, dim, from, to, source = null) {
   return rows.map((r) => {
     const e = costByKey.get(r.k) || { s: 0, unpriced: 0 };
     return {
-      key: r.k,
+      key: r.kName || r.k,
       inputTokens: r.inputTokens,
       outputTokens: r.outputTokens,
       reasoningTokens: r.reasoningTokens,

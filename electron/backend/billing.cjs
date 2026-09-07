@@ -280,7 +280,6 @@ async function pullRemotePricing(opts = {}) {
   const applied = db.applyRemotePricing(candidates);
 
   // 5. 记账（哈希作为同步锚点；远程无哈希文件时退化为数据自身哈希）
-  const crypto = require("node:crypto");
   const syncHash = remoteHash || crypto.createHash("sha256").update(text).digest("hex");
   db.setMeta("remote_pricing_hash", syncHash);
   db.setMeta("remote_pricing_at", String(Date.now()));
