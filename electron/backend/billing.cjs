@@ -193,8 +193,11 @@ function localPricesUpdatedAt() {
 async function syncPrices(wd, deviceName) {
   if (!wd || !wd.endpoint) return { action: "skipped", reason: "未配置 WebDAV" };
   const url = webdav.joinUrl(wd.endpoint, wd.root, PRICES_FILE);
+  // 注意：远端缺失（404 → null）才允许本地上传覆盖；网络错误/5xx 必须向上抛出，
+  // 由调用方记日志并跳过本轮价格同步——若把读失败当缺失处理，本地旧时钟的
+  // 价格表会反向覆盖远端较新的表（LWW 失效）。
+  const text = await webdav.getText(url, wd);
   let remote = null;
-  const text = await webdav.getText(url, wd).catch(() => null);
   if (text) {
     try {
       remote = JSON.parse(text);
@@ -205,6 +208,12 @@ async function syncPrices(wd, deviceName) {
   }
   const remoteUpdated = remote ? Number(remote.updatedAt) || 0 : 0;
   const localUpdated = localPricesUpdatedAt();
+
+  // LWW 依赖各设备墙钟：远端时间戳明显领先本地时钟时提示（说明对端或本机时间不准，
+  // 可能导致后改的配置因时钟偏慢而输掉 LWW），不阻断同步
+  if (remote && remoteUpdated > Date.now() + 5 * 60 * 1000) {
+    db.addLog("merge", "warn", "远端价格表时间戳明显领先本机时钟，请检查各设备系统时间是否准确（时间偏差会影响价格表新旧判定）");
+  }
 
   if (remote && remoteUpdated > localUpdated) {
     const count = Array.isArray(remote.prices) ? remote.prices.length : 0;

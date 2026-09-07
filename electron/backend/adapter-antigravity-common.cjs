@@ -151,7 +151,9 @@ function matchModelEntry(fields) {
     } catch {
       continue;
     }
-    const remainF = sub.find((e) => (e.wt === 5 || e.wt === 1) && e.flt !== undefined);
+    // remaining 可能是 float(wt=5) 或 double(wt=1)：原写法 `e.flt !== undefined`
+    // 对 double 字段恒假，double 编码的配额池会被静默漏掉
+    const remainF = sub.find((e) => (e.wt === 5 && e.flt !== undefined) || (e.wt === 1 && e.dbl !== undefined));
     const remain = remainF ? (remainF.wt === 5 ? remainF.flt : remainF.dbl) : null;
     if (remain === null || !(remain >= 0 && remain <= 1)) continue;
     const resetF = sub.find((e) => e.field === 2 && e.wt === 2);
@@ -282,13 +284,8 @@ function openReadOnly(file) {
     // 应用正在运行等场景可能锁库：复制到临时目录再读
     const tmp = path.join(os.tmpdir(), `dosage-sync-ag-${process.pid}-${Date.now()}`);
     fs.mkdirSync(tmp, { recursive: true });
-    const base = path.basename(file);
-    for (const ext of ["", "-wal", "-shm"]) {
-      const src = file + ext;
-      if (fs.existsSync(src)) fs.copyFileSync(src, path.join(tmp, base + ext));
-    }
-    // 副本目录须等连接用完才能删，挂到进程退出时清理（清理失败留残留在系统临时目录，无害）
-    const conn = new DatabaseSync(path.join(tmp, base), { readOnly: true });
+    // 清理回调必须在复制/构造之前注册：任一步骤失败（如复制期间源库在写导致副本
+    // 损坏、构造抛错）临时目录都不会泄漏（清理失败留残留在系统临时目录，无害）
     process.once("exit", () => {
       try {
         fs.rmSync(tmp, { recursive: true, force: true });
@@ -296,7 +293,23 @@ function openReadOnly(file) {
         /* 忽略 */
       }
     });
-    return conn;
+    try {
+      const base = path.basename(file);
+      for (const ext of ["", "-wal", "-shm"]) {
+        const src = file + ext;
+        if (fs.existsSync(src)) fs.copyFileSync(src, path.join(tmp, base + ext));
+      }
+      // 副本目录须等连接用完才能删，挂到进程退出时清理
+      return new DatabaseSync(path.join(tmp, base), { readOnly: true });
+    } catch (e) {
+      // 立即清理失败的临时目录，exit 回调兜底
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      } catch {
+        /* 忽略 */
+      }
+      throw e;
+    }
   }
 }
 
@@ -392,9 +405,14 @@ function makeAdapter(id, name, homeSub, appDataName) {
     const consumptions = computePoolConsumption(prev ? prev.pools : null, pools);
 
     const out = [];
+    const usedIds = new Set(); // 同一次抽取内 id 去重：跨周期同前缀池名可能产生相同 id
     for (const pool of consumptions) {
+      let recId = `${deviceId}:${id}:${now}:${pool.label}`;
+      let suffix = 1;
+      while (usedIds.has(recId)) recId = `${deviceId}:${id}:${now}:${pool.label}#${++suffix}`;
+      usedIds.add(recId);
       out.push({
-        id: `${deviceId}:${id}:${now}:${pool.label}`,
+        id: recId,
         deviceId,
         deviceName,
         source: id,

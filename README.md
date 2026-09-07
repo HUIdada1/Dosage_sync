@@ -1,8 +1,8 @@
 # 用量同步（Dosage Sync）
 
-一个 Windows 托盘常驻工具：自动读取本机 ZCode、Codex、DeepSeek Harness、Antigravity 与 Antigravity IDE 的模型用量，按「电脑」为单元同步到自建 WebDAV，并在多台电脑之间汇总展示。
+一个 Windows 托盘常驻工具：自动读取本机 ZCode、Codex、DeepSeek Harness、WorkBuddy 与 Antigravity、Antigravity IDE 的模型用量，按「电脑」为单元同步到自建 WebDAV，并在多台电脑之间汇总展示。
 
-- **三数据源已接入**：支持 ZCode、Codex、DeepSeek Harness（DSH），各源可独立启用、探测、同步和筛选；Antigravity 系两源（Antigravity / Antigravity IDE）的适配器代码保留但暂时隐藏，恢复方法见 `electron/backend/adapter.cjs`。
+- **四数据源已接入**：支持 ZCode、Codex、DeepSeek Harness（DSH）、WorkBuddy，各源可独立启用、探测、同步和筛选；Antigravity 系两源（Antigravity / Antigravity IDE）的适配器代码保留但暂时隐藏，恢复方法见 `electron/backend/adapter.cjs`。
 - **存储后端可扩展**：当前优先支持自建飞牛 fnOS 的 WebDAV，后续可增加 Nextcloud / 坚果云 / 群晖 / 自定义。
 - **聚合灵活**：累计 token 可按软件源、设备、模型和供应商隔离查询，支持多模型多类型。
 - **可视化**：曲线趋势图 + GitHub 风格蓝色热力点阵图（15 档）+ 时间/设备/模型多维筛选，深色/浅色主题（默认浅色）。
@@ -17,7 +17,7 @@
 | 前端 | Vue 3 + TypeScript + Vite + Pinia + ECharts |
 | 后端 | Node.js（`node:sqlite` / 原生 fetch） |
 | 本地库 | SQLite（Node 22 内置 `node:sqlite`，与各源数据库分离） |
-| 打包 | electron-builder：NSIS 安装包 + portable 便携版单 exe（便携版数据跟随 exe 同目录 `data/`，但不支持开机自启——注册的会是临时解压副本） |
+| 打包 | electron-builder：NSIS 安装包 + portable 便携版单 exe（便携版不支持开机自启——注册的会是临时解压副本；数据默认统一在用户主目录 `~/.Dosage_sync/`，可在设置页自定义） |
 
 ## 目录结构
 
@@ -48,6 +48,8 @@
 │       ├── adapter-zcode.cjs # ZCode 适配器（读 ~/.zcode）
 │       ├── adapter-codex.cjs # Codex 适配器（读 ~/.codex）
 │       ├── adapter-dsh.cjs # DeepSeek Harness 适配器（读 ~/.dsh）
+│       ├── adapter-workbuddy.cjs # WorkBuddy 适配器（读 ~/.workbuddy）
+│       ├── adapter-reasonix.cjs # Reasonix 适配器（读 stats/YYYY-MM-DD.jsonl 每日账本）
 │       ├── adapter-antigravity-common.cjs # Antigravity 系公共工厂（state.vscdb 配额池快照差值）
 │       ├── adapter-antigravity.cjs # Antigravity 适配器（读 %APPDATA%/Antigravity）
 │       ├── adapter-antigravity-ide.cjs # Antigravity IDE 适配器（读 %APPDATA%/Antigravity IDE）
@@ -69,12 +71,16 @@
 | ZCode | `~/.zcode` | `cli/db/db.sqlite` 的 `model_usage` | 启用 |
 | Codex | `~/.codex` | `sessions/**/rollout-*.jsonl` 的单次 `last_token_usage` | 停用 |
 | DeepSeek Harness | `~/.dsh` | `tokenledger.sqlite` 的 `session_rollups` | 停用 |
+| WorkBuddy | `~/.workbuddy` | `projects/**/*.jsonl` 会话转录的逐次 `message.usage` | 启用 |
+| Reasonix | `%APPDATA%/reasonix`（Windows）／`~/.reasonix` | `stats/YYYY-MM-DD.jsonl` 每日账本的逐次请求聚合 | 启用 |
 | Antigravity（旧版） | `%APPDATA%/Antigravity` | `User/globalStorage/state.vscdb` 的配额状态缓存 | 停用 |
 | Antigravity IDE（新版） | `%APPDATA%/Antigravity IDE` | `User/globalStorage/state.vscdb` 的配额状态缓存 | 停用 |
 
-Codex、DSH 与两个 Antigravity 源需要在设置页手动启用。五种来源共用本机设备 ID，记录依靠 `source` 隔离；切换顶部数据源后，总览、设备、趋势、热力图与明细会同步切换统计范围，各源统计互不影响。
+Codex、DSH 与两个 Antigravity 源需要在设置页手动启用。七种来源共用本机设备 ID，记录依靠 `source` 隔离；切换顶部数据源后，总览、设备、趋势、热力图与明细会同步切换统计范围，各源统计互不影响。
 
-> **Token 口径说明（已实测确认）**：三个 token 源的「输入」均包含缓存命中——ZCode 为源数据原生口径，DSH 由适配器归一化补入，Codex 已用本机 rollout 原始数据实测确认（OpenAI 语义中 `cached_input_tokens` 是 `input_tokens` 的子集）。因此缓存命中率 = 缓存命中 / 输入在跨源对比时口径一致，命中率恒 ≤ 100%。
+> **Token 口径说明（已实测确认）**：四个 token 源的「输入」均包含缓存命中——ZCode 为源数据原生口径，DSH 由适配器归一化补入，Codex 已用本机 rollout 原始数据实测确认（OpenAI 语义中 `cached_input_tokens` 是 `input_tokens` 的子集），WorkBuddy 会话转录实测同口径。因此缓存命中率 = 缓存命中 / 输入在跨源对比时口径一致，命中率恒 ≤ 100%。WorkBuddy 的推理与缓存写入 token 从其原始回包（`providerData.rawUsage`）补入，源数据缺失时记 0；转录中的对话内容不会被读取或上传。
+
+> **Reasonix 口径说明**：Reasonix 的每日账本把输入拆成**互斥**的 `cache_miss` / `cache_hit` 两桶，与上述「输入含缓存」口径不同。适配器做一次无损映射后入库——`inputTokens = cache_miss + cache_hit`（即 `prompt`）、`cacheReadTokens = cache_hit`、`outputTokens = completion − reasoning`、`cacheCreationTokens = 0`（账本不持久化缓存写入）。映射后计费公式的「净输入 = 输入 − 缓存命中」恰等于 `cache_miss`、「输出 + 推理」恰等于 `completion`，**`v_record_cost` 无需任何改动**。账本中 `turn: true` 的轮次行不是真实 provider 调用，已跳过以避免重复计数；缓存写入缺失会让费用轻微低估（写入价通常高于输入价的部分未计）。目录可用 `REASONIX_STATE_HOME` / `REASONIX_HOME` 覆盖。
 
 同步采用**分片级增量传输**：每个日分片以内容哈希记账，内容未变化时自动跳过上传/下载，同步耗时不随历史数据量线性增长。退役设备可在侧边栏悬停设备项点「×」删除（同时清理 WebDAV 上的该设备数据与本地记录，本机不可删）。
 

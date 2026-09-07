@@ -5,7 +5,7 @@ export interface UsageRecord {
   id: string; // 全局唯一 = `${deviceId}:${source}:${源记录id}`
   deviceId: string; // 电脑标识（ZCode 取 deviceMid）
   deviceName: string; // 用户起的电脑名
-  source: string; // 软件源："zcode" | "codex" | ...
+  source: string; // 软件源："zcode" | "codex" | "dsh" | "workbuddy" | "reasonix" | ...
   providerId: string; // 供应商
   modelId: string; // 具体模型
   variant?: string; // 变体（reasoning 档位 low/max/high）
@@ -116,7 +116,7 @@ export interface WebDavConfig {
 
 /** 数据源配置 */
 export interface SourceConfig {
-  source: string; // zcode / codex / ...
+  source: string; // zcode / codex / dsh / workbuddy / reasonix / ...
   enabled: boolean;
   dataDir: string | null; // 数据目录（null 表示自动探测）
 }
@@ -126,6 +126,21 @@ export interface SourceInfo {
   id: string;
   name: string;
   enabled: boolean;
+  /** 是否在顶栏显示（由 sourceVisibility 决定） */
+  visible: boolean;
+}
+
+/**
+ * 工具栏切换项自定义配置：控制顶栏各数据源 Tab 的显示/隐藏与排列顺序。
+ * 与 sources[].enabled（是否同步）相互独立：隐藏 ≠ 停用，排序 ≠ 启用。
+ */
+export interface SourceVisibility {
+  /** 有序的 id 列表：顶栏 Tab 的显示顺序（未列出的源按适配器注册顺序补在末尾） */
+  order: string[];
+  /** 被隐藏（不在顶栏显示）的 id 列表 */
+  hidden: string[];
+  /** 是否已完成首次初始化（首次启动自动探测后置 true，避免重复覆盖用户自定义） */
+  initialized: boolean;
 }
 
 /** 调度配置 */
@@ -144,6 +159,8 @@ export interface AppConfig {
   deviceName: string; // 本机电脑名
   webdav: WebDavConfig;
   sources: SourceConfig[];
+  /** 工具栏切换项显隐与排序（用户可自定义，持久化） */
+  sourceVisibility: SourceVisibility;
   schedule: ScheduleConfig;
   totalMode: TotalMode; // 总量口径
   theme: "light" | "dark"; // 主题
@@ -188,6 +205,7 @@ export interface SyncProgress {
   percent: number; // 0~100
   message: string;
   lastSyncAt?: number | null;
+  localOnly?: boolean; // 未配置 WebDAV 时仅同步本机数据，跳过远程
 }
 
 /** 数据源健康状态 */
@@ -198,6 +216,22 @@ export interface SourceHealth {
   dataDir: string | null;
   readable: boolean;
   lastSyncAt: number | null;
+}
+
+/** 数据缓存目录信息（设置页「数据缓存目录」） */
+export interface DataDirInfo {
+  dataDir: string; // 当前生效的数据目录
+  defaultDataDir: string; // 默认目录（用户主目录/.Dosage_sync）
+  isCustom: boolean; // 是否已自定义（非默认）
+}
+
+/** 设置数据缓存目录的结果 */
+export interface SetDataDirResult {
+  ok: boolean;
+  message: string;
+  migrated?: boolean; // 是否迁移了旧缓存数据
+  dataDir?: string;
+  defaultDataDir?: string;
 }
 
 /** 模型价格版本（model_price 表一行） */

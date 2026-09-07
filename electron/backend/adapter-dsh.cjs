@@ -74,18 +74,35 @@ function readWithWalFallback(dir) {
 function localDayStart(day) {
   const match = String(day || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) return null;
-  const value = new Date(+match[1], +match[2] - 1, +match[3]).getTime();
+  const [y, m, d] = [+match[1], +match[2], +match[3]];
+  // 非法月份/日期（如 2026-13-40）必须拒绝——Date 构造会静默进位到错误的年月
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const value = new Date(y, m - 1, d).getTime();
   return Number.isFinite(value) ? value : null;
+}
+
+/** 本地日期字符串 YYYY-MM-DD（与 session_rollups.day 同一口径） */
+function localDateStr(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 /** DSH 的 inputTokens 不含缓存读取，归一化后补入缓存读取量以统一缓存命中率口径。 */
 function extract(dir, deviceId, deviceName, since) {
   if (!validate(dir)) throw new Error(`未找到 DeepSeek Harness 数据库：${path.join(dir, "tokenledger.sqlite")}`);
 
+  // 日粒度记录配毫秒水位线的关键防御：session_rollups 的 startedAt 被压成当天零点，
+  // 若按「startedAt <= since 跳过」严格增量，昨天/今天行在锚点推进后发生的迟写更新
+  // （跨午夜会话收尾、token 回填）会被永久过滤。改为按「本地日期 ≥ since 前一天」
+  // 宽松回扫，重复行靠幂等 id（含 sessionId+day+site+provider+model）在入库时覆盖去重。
+  const minDay = since > 0 ? localDateStr(since - 86400000) : "";
+
   const out = [];
   for (const row of readWithWalFallback(dir)) {
+    if (minDay && String(row.day || "") < minDay) continue;
     const startedAt = localDayStart(row.day);
-    if (startedAt === null || startedAt <= since) continue;
+    if (startedAt === null) continue;
     const modelId = normalizeModel(row.model || "unknown");
     const rawInput = row.inputTokens ?? 0;
     const cacheRead = row.cacheReadTokens ?? 0;

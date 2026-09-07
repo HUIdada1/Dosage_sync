@@ -30,7 +30,7 @@ function genRecords(count: number) {
     const reasoning = seed(i * 5) > 0.4 ? Math.round(seed(i * 9) * 6000) : 0;
     const cacheRead = Math.round(input * (0.7 + seed(i * 3) * 0.28));
     const d = new Date(2026, 8, 4 - (i % 60), Math.floor(8 + seed(i) * 12), Math.floor(seed(i * 2) * 60));
-    const source = ["zcode", "codex", "dsh"][i % 3];
+    const source = ["zcode", "codex", "dsh", "workbuddy", "reasonix"][i % 5];
     recs.push({
       id: `${LOCAL_DEVICE}:${source}:${i}`,
       deviceId: LOCAL_DEVICE,
@@ -88,15 +88,21 @@ const mock = {
           case "load_config":
             resolve({
               deviceName: "这台电脑",
-              webdav: { endpoint: "https://dav.example.com/dav", username: "admin", password: "********", root: "/dosage-sync", preset: "feiniu" },
+              webdav: { endpoint: "https://dav.example.com/dav", username: "admin", password: "••••••••", root: "/dosage-sync", preset: "feiniu" },
               sources: [
                 { source: "zcode", enabled: true, dataDir: "C:\\Users\\YOUR_NAME\\.zcode" },
                 { source: "codex", enabled: false, dataDir: null },
                 { source: "dsh", enabled: false, dataDir: null },
+                { source: "workbuddy", enabled: true, dataDir: null },
                 // 【暂时隐藏 Antigravity 系】
                 // { source: "antigravity", enabled: false, dataDir: null },
                 // { source: "antigravity-ide", enabled: false, dataDir: null },
               ],
+              sourceVisibility: {
+                order: ["zcode", "codex", "dsh", "workbuddy", "reasonix"],
+                hidden: [],
+                initialized: true,
+              },
               schedule: { hourly: false, hourlyInterval: 1, daily: false, dailyTime: "23:30", autoStart: false, minimizeToTray: true, notifyOnSuccess: false },
               totalMode: "full",
               theme: "light",
@@ -114,12 +120,14 @@ const mock = {
           case "save_config": resolve({ ok: true, message: "设置保存成功" }); break;
           case "test_webdav": resolve({ ok: true, message: "连接正常" }); break;
           case "list_sources": resolve([
-            { id: "zcode", name: "ZCode", enabled: true },
-            { id: "codex", name: "Codex", enabled: false },
-            { id: "dsh", name: "DeepSeek Harness", enabled: false },
+            { id: "zcode", name: "ZCode", enabled: true, visible: true },
+            { id: "codex", name: "Codex", enabled: false, visible: true },
+            { id: "dsh", name: "DeepSeek Harness", enabled: false, visible: true },
+            { id: "workbuddy", name: "WorkBuddy", enabled: true, visible: true },
+            { id: "reasonix", name: "Reasonix", enabled: true, visible: true },
             // 【暂时隐藏 Antigravity 系】
-            // { id: "antigravity", name: "Antigravity", enabled: false },
-            // { id: "antigravity-ide", name: "Antigravity IDE", enabled: false },
+            // { id: "antigravity", name: "Antigravity", enabled: false, visible: false },
+            // { id: "antigravity-ide", name: "Antigravity IDE", enabled: false, visible: false },
           ]); break;
           case "detect_source": {
             const mockDirs: Record<string, string> = {
@@ -135,6 +143,8 @@ const mock = {
             { source: "zcode", name: "ZCode", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\.zcode", readable: true, lastSyncAt: Date.now() - 60000 },
             { source: "codex", name: "Codex", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\.codex", readable: true, lastSyncAt: Date.now() - 60000 },
             { source: "dsh", name: "DeepSeek Harness", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\.dsh", readable: true, lastSyncAt: Date.now() - 60000 },
+            { source: "workbuddy", name: "WorkBuddy", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\.workbuddy", readable: true, lastSyncAt: Date.now() - 60000 },
+            { source: "reasonix", name: "Reasonix", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\AppData\\Roaming\\reasonix", readable: true, lastSyncAt: Date.now() - 60000 },
             // 【暂时隐藏 Antigravity 系】
             // { source: "antigravity", name: "Antigravity", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\AppData\\Roaming\\Antigravity", readable: true, lastSyncAt: Date.now() - 60000 },
             // { source: "antigravity-ide", name: "Antigravity IDE", detected: true, dataDir: "C:\\Users\\YOUR_NAME\\AppData\\Roaming\\Antigravity IDE", readable: true, lastSyncAt: Date.now() - 60000 },
@@ -171,7 +181,7 @@ const mock = {
           case "get_devices": {
             const local = allRecords.filter((r) => r.deviceId === LOCAL_DEVICE && (!args.source || r.source === args.source)).reduce((s, r) => s + calcTotal(r, mode), 0);
             resolve([
-              { deviceId: LOCAL_DEVICE, deviceName: "笔记本", source: "zcode,codex,dsh", lastSyncAt: Date.now() - 60000, online: true, totalTokens: local, isLocal: true, cost: allRecords.reduce((n, r) => n + calcCost(r), 0) },
+              { deviceId: LOCAL_DEVICE, deviceName: "笔记本", source: "zcode,codex,dsh,workbuddy,reasonix", lastSyncAt: Date.now() - 60000, online: true, totalTokens: local, isLocal: true, cost: allRecords.reduce((n, r) => n + calcCost(r), 0) },
             ]);
             break;
           }
@@ -196,8 +206,9 @@ const mock = {
           case "get_trend": {
             const days = args.days || 30;
             const out: any[] = [];
+            // 以真实今天为基准生成，避免预览日期随时间漂移
             for (let i = days - 1; i >= 0; i--) {
-              const d = new Date(2026, 8, 4); d.setDate(d.getDate() - i);
+              const d = new Date(); d.setDate(d.getDate() - i);
               const dow = d.getDay(); const weekend = dow === 0 || dow === 6 ? 0.55 : 1;
               const v = Math.round(4.6e6 * weekend * (0.72 + seed(i * 7 + days) * 0.56) * (0.65 + (days - i) / days * 0.35));
               out.push({ date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`, total: v, cost: (v / 1e6) * 2.6, models: { "GPT-5": Math.round(v * 0.42), "Claude 4": Math.round(v * 0.33), "Gemini 2.5": Math.round(v * 0.25) } });
@@ -278,7 +289,17 @@ const mock = {
           }
           case "delete_device": resolve({ ok: true, message: "设备已删除（演示环境）" }); break;
           case "open_data_dir": resolve(null); break;
-          case "get_data_dir": resolve("C:\\Users\\YOUR_NAME\\AppData\\Roaming\\DosageSync"); break;
+          case "get_data_dir": resolve("C:\\Users\\YOUR_NAME\\.Dosage_sync"); break;
+          case "get_data_dir_info":
+            resolve({ dataDir: "C:\\Users\\YOUR_NAME\\.Dosage_sync", defaultDataDir: "C:\\Users\\YOUR_NAME\\.Dosage_sync", isCustom: false });
+            break;
+          case "browse_data_dir": resolve({ ok: true, canceled: false, path: "C:\\Users\\YOUR_NAME\\.Dosage_sync" }); break;
+          case "set_data_dir":
+            resolve({ ok: true, message: "目录已更改，重启应用后生效", migrated: false, dataDir: String(args.path || ""), defaultDataDir: "C:\\Users\\YOUR_NAME\\.Dosage_sync" });
+            break;
+          case "reset_data_dir":
+            resolve({ ok: true, message: "已恢复默认目录，重启应用后生效", dataDir: "C:\\Users\\YOUR_NAME\\.Dosage_sync", defaultDataDir: "C:\\Users\\YOUR_NAME\\.Dosage_sync" });
+            break;
           case "get_app_version": resolve("1.0.0"); break;
           case "get_is_portable": resolve(false); break;
           case "reset_local_cache": resolve({ ok: true, message: "本地缓存已清空（演示环境）" }); break;

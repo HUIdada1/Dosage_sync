@@ -1,7 +1,11 @@
 // 配置与数据目录管理（Node 主进程侧）
 "use strict";
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+
+// 数据源适配器（仅用于首次启动自动探测本机数据源，避免循环依赖时用 require 延迟加载）
+const adapter = require("./adapter.cjs");
 
 // Electron safeStorage（主进程可用；纯 Node 环境如脚本直跑时降级明文）
 let safeStorage = null;
@@ -14,6 +18,9 @@ try {
 
 // 密文前缀：config.json 中 WebDAV 密码带此前缀表示经 safeStorage 加密（OS 级密钥，随系统用户绑定）
 const ENC_PREFIX = "enc:v1:";
+// 密码掩码：load_config 回传渲染进程时用掩码替代明文（渲染层拿不到真实密码）；
+// save_config 收到精确掩码值时视为「未修改」，保留磁盘上的原密码
+const PASSWORD_MASK = "••••••••";
 
 /** 明文 → 密文；safeStorage 不可用时原样返回（降级明文存储） */
 function encryptPassword(plain) {
@@ -54,14 +61,15 @@ function portableBaseDir() {
   return null;
 }
 
-/** 判断是否为便携模式：数据目录跟随 exe 所在目录 */
+/** 判断是否为便携模式（免安装单文件）：便携版不支持开机自启（注册的会是临时解压副本路径）。
+ *  数据目录不再随便携模式改变，统一默认 ~/.Dosage_sync，此处仅用于开机自启等能力判定。 */
 function isPortable() {
   return portableBaseDir() !== null;
 }
 
 /**
- * 旧版便携判定失效（process.execPath 指向 TEMP 解压副本）导致数据落在 %APPDATA%/DosageSync；
- * 修复后便携模式首次运行时把旧数据复制到 exe 旁 data/（复制而非移动，失败不影响使用）。
+ * 旧版（≤1.6.1）安装版数据落在 %APPDATA%/DosageSync；
+ * 默认目录改为 ~/.Dosage_sync 后，首次运行时把旧数据复制到新默认目录（复制而非移动，失败不影响使用）。
  */
 function migrateLegacyAppData(targetDir) {
   try {
@@ -81,19 +89,103 @@ function migrateLegacyAppData(targetDir) {
   }
 }
 
-/** 数据目录：便携模式跟随 exe 目录，否则 %APPDATA%/DosageSync */
+/** 数据目录：优先用户自定义目录，否则默认用户主目录/.Dosage_sync。
+ *  默认不再跟随 exe 目录（程序文件夹）——无论安装版还是便携版，未自定义时统一落在
+ *  os.homedir()/.Dosage_sync；os.homedir 内部基于 %USERPROFILE% 等系统环境变量动态解析，
+ *  绝不硬编码某台电脑的用户名，保证在不同电脑上都指向正确的用户目录。 */
 function dataDir() {
-  let dir;
-  const portableDir = portableBaseDir();
-  if (portableDir) {
-    dir = path.join(portableDir, "data");
-    migrateLegacyAppData(dir);
-  } else {
-    const base = process.env.APPDATA || ".";
-    dir = path.join(base, "DosageSync");
-  }
+  const dir = customDataDir() || defaultDataDir();
+  migrateLegacyAppData(dir);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+// ===== 数据缓存目录自定义（设置页「数据缓存目录」） =====
+
+/** 默认数据目录：动态取当前登录用户主目录（os.homedir 内部即基于 %USERPROFILE% 等系统环境变量），
+ *  保证在不同电脑上都指向正确用户目录，绝不硬编码某台电脑的用户名 */
+function defaultDataDir() {
+  return path.join(os.homedir(), ".Dosage_sync");
+}
+
+/** 引导文件路径：记录用户自定义的数据目录。放在主目录下、独立于 dataDir 本身，
+ *  避免「配置存在 dataDir 内、却又需要先知道 dataDir 才能读配置」的循环依赖 */
+function locationFile() {
+  return path.join(os.homedir(), ".Dosage_sync.location");
+}
+
+/** 读取用户自定义数据目录；未设置/文件损坏/路径非法时返回 null */
+function customDataDir() {
+  try {
+    const p = locationFile();
+    if (!fs.existsSync(p)) return null;
+    const raw = JSON.parse(fs.readFileSync(p, "utf8"));
+    const dir = raw && typeof raw.path === "string" ? raw.path.trim() : "";
+    if (dir && path.isAbsolute(dir)) return path.normalize(dir);
+  } catch {
+    /* 引导文件损坏忽略，回退默认目录 */
+  }
+  return null;
+}
+
+/** 写入用户自定义数据目录（引导文件） */
+function setCustomDataDir(dir) {
+  const normalized = path.normalize(dir);
+  fs.writeFileSync(locationFile(), JSON.stringify({ path: normalized }, null, 2), "utf8");
+  return normalized;
+}
+
+/** 清除自定义目录（恢复默认 ~/.Dosage_sync） */
+function clearCustomDataDir() {
+  try { fs.rmSync(locationFile(), { force: true }); } catch { /* 忽略 */ }
+}
+
+/**
+ * 校验候选数据目录：返回 { ok, message, resolved }。
+ * 依次检查：路径非空 → 是否为绝对路径 → 是否可创建/已存在 → 是否可写（写入临时文件再删除）。
+ * 校验通过但目录不存在时会自动创建。
+ */
+function validateDataDir(dir) {
+  const raw = typeof dir === "string" ? dir.trim() : "";
+  if (!raw) return { ok: false, message: "路径不能为空" };
+  if (!path.isAbsolute(raw)) return { ok: false, message: "请输入绝对路径（如 C:\\Users\\<用户名>\\.Dosage_sync）" };
+  const resolved = path.normalize(raw);
+  try {
+    if (!fs.existsSync(resolved)) {
+      fs.mkdirSync(resolved, { recursive: true });
+    }
+    const st = fs.statSync(resolved);
+    if (!st.isDirectory()) return { ok: false, message: "该路径已存在但不是目录" };
+    // 写权限探测：创建临时文件并删除
+    const probe = path.join(resolved, `.dosage-write-test-${process.pid}-${Date.now()}`);
+    fs.writeFileSync(probe, "ok", "utf8");
+    fs.rmSync(probe, { force: true });
+    return { ok: true, message: "目录可用", resolved };
+  } catch (e) {
+    return { ok: false, message: `目录不可用：${e.code ? e.code + " " : ""}${e.message}` };
+  }
+}
+
+/**
+ * 迁移旧数据目录到新目录：把旧目录中的汇总库（含 WAL/SHM）与配置文件复制到新目录。
+ * 仅当新目录尚未初始化且旧目录存在数据时执行；失败静默（保留旧目录，不阻断切换）。
+ * 返回是否发生了迁移。
+ */
+function migrateDataDir(fromDir, toDir) {
+  try {
+    if (!fromDir || !toDir || fromDir === toDir) return false;
+    const dbTarget = path.join(toDir, "dosage-sync.sqlite");
+    const dbSource = path.join(fromDir, "dosage-sync.sqlite");
+    if (fs.existsSync(dbTarget) || !fs.existsSync(dbSource)) return false;
+    fs.mkdirSync(toDir, { recursive: true });
+    for (const name of ["dosage-sync.sqlite", "dosage-sync.sqlite-wal", "dosage-sync.sqlite-shm", "config.json", "config.json.bak"]) {
+      const src = path.join(fromDir, name);
+      if (fs.existsSync(src)) fs.copyFileSync(src, path.join(toDir, name));
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** 汇总库路径 */
@@ -121,10 +213,19 @@ function defaultConfig() {
       { source: "zcode", enabled: true, dataDir: null },
       { source: "codex", enabled: false, dataDir: null },
       { source: "dsh", enabled: false, dataDir: null },
+      { source: "workbuddy", enabled: true, dataDir: null },
+      { source: "reasonix", enabled: true, dataDir: null },
       // 【暂时隐藏 Antigravity 系】
       // { source: "antigravity", enabled: false, dataDir: null },
       // { source: "antigravity-ide", enabled: false, dataDir: null },
     ],
+    // 工具栏切换项显隐与排序：默认全部显示，顺序即下方 order。
+    // initialized=false 表示首次启动尚未自动探测，loadConfig 会据本机数据源自动开启。
+    sourceVisibility: {
+      order: ["zcode", "codex", "dsh", "workbuddy", "reasonix"],
+      hidden: [],
+      initialized: false,
+    },
     schedule: {
       hourly: false,
       hourlyInterval: 1,
@@ -171,10 +272,60 @@ function mergeConfig(def, cfg) {
   return out;
 }
 
+/**
+ * 工具栏切换项显隐与排序归一化。
+ * - order/hidden 补齐到全部已注册数据源（新增数据源自动补入，缺失项排末尾）；
+ * - initialized=false（首次启动）时：探测本机数据源，检测到的自动「显示 + 启用」，
+ *   未检测到的按默认 enabled 值显示（保持原有行为），随后置 initialized=true。
+ * 归一化后的结果写回 merged，由 saveConfig 落盘持久化。
+ */
+function normalizeSourceVisibility(cfg) {
+  const allIds = adapter.sources.map((s) => s.id);
+  const defaults = defaultConfig().sourceVisibility;
+  let vis = cfg.sourceVisibility;
+  if (!vis || typeof vis !== "object") {
+    vis = { order: defaults.order.slice(), hidden: [], initialized: false };
+    cfg.sourceVisibility = vis;
+  }
+  const order = Array.isArray(vis.order) ? vis.order.filter((id) => typeof id === "string") : [];
+  const hidden = Array.isArray(vis.hidden) ? vis.hidden.filter((id) => typeof id === "string") : [];
+
+  // 首次启动自动探测：检测到数据源 → 显示 + 启用（需求 2）
+  if (!vis.initialized) {
+    for (const src of adapter.sources) {
+      let dir = null;
+      try {
+        dir = src.detect();
+      } catch {
+        dir = null;
+      }
+      const detected = !!dir;
+      if (detected) {
+        // 从 hidden 中移除（确保显示）
+        if (!order.includes(src.id)) order.push(src.id);
+        // 自动启用同步
+        const s = (cfg.sources || []).find((item) => item.source === src.id);
+        if (s) s.enabled = true;
+      }
+    }
+    vis.initialized = true;
+  }
+
+  // order 补齐未出现的新数据源（排在末尾，保持注册顺序）
+  const missing = allIds.filter((id) => !order.includes(id));
+  vis.order = [...order, ...missing];
+  // hidden 过滤掉已不存在的数据源
+  vis.hidden = hidden.filter((id) => allIds.includes(id));
+}
+
 /** 加载配置（不存在则返回默认） */
 function loadConfig() {
   const p = configPath();
-  if (!fs.existsSync(p)) return defaultConfig();
+  if (!fs.existsSync(p)) {
+    const cfg = defaultConfig();
+    normalizeSourceVisibility(cfg);
+    return cfg;
+  }
   try {
     const text = fs.readFileSync(p, "utf8");
     const parsed = JSON.parse(text);
@@ -194,6 +345,16 @@ function loadConfig() {
           }
         : fallback;
     });
+    // 已下线/未知源的保存配置保留（如 antigravity 暂时下线期间），恢复上线后设置不丢
+    for (const [id, saved] of configured) {
+      if (!merged.sources.some((s) => s.source === id)) {
+        merged.sources.push({
+          source: id,
+          enabled: typeof saved.enabled === "boolean" ? saved.enabled : false,
+          dataDir: typeof saved.dataDir === "string" && saved.dataDir ? saved.dataDir : null,
+        });
+      }
+    }
     // WebDAV 密码：密文解密为明文交给上层使用（明文旧配置保持原样，保存时自动迁移为密文）
     if (merged.webdav) merged.webdav.password = decryptPassword(merged.webdav.password);
     // 总量口径归一化：platform 选项从未实现（等效 compact），已从 UI 移除，旧配置值回退为 compact
@@ -216,10 +377,12 @@ function loadConfig() {
         merged.billing.remotePricing = defaultConfig().billing.remotePricing;
       }
     }
+    // 工具栏切换项显隐与排序：归一化 + 首次启动自动探测
+    normalizeSourceVisibility(merged);
     return merged;
   } catch (e) {
-    // 配置损坏时留档（.bak）并回退默认，避免应用无法启动
-    try { fs.renameSync(p, p + ".bak"); } catch { /* 留档失败忽略 */ }
+    // 配置损坏时留档（.bak）并回退默认，避免应用无法启动；旧留档先删，Windows 下 rename 不覆盖
+    try { fs.rmSync(p + ".bak", { force: true }); fs.renameSync(p, p + ".bak"); } catch { /* 留档失败忽略 */ }
     return defaultConfig();
   }
 }
@@ -234,4 +397,7 @@ function saveConfig(cfg) {
   fs.renameSync(tmp, p);
 }
 
-module.exports = { dataDir, dbPath, configPath, loadConfig, saveConfig, defaultConfig, isPortable };
+module.exports = {
+  dataDir, dbPath, configPath, loadConfig, saveConfig, defaultConfig, isPortable, PASSWORD_MASK,
+  defaultDataDir, customDataDir, setCustomDataDir, clearCustomDataDir, validateDataDir, migrateDataDir,
+};

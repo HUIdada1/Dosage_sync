@@ -45,3 +45,9 @@ scripts/
 
 # 本地方案文档（不公开）
 动效美化方案.md
+
+# 助手工作区（本地记忆/缓存，不入库）
+.workbuddy/
+
+# vite 构建中断时残留的临时配置
+vite.config.ts.timestamp-*.mjs

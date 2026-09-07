@@ -12,10 +12,17 @@ const defaultConfig: AppConfig = {
     { source: "zcode", enabled: true, dataDir: null },
     { source: "codex", enabled: false, dataDir: null },
     { source: "dsh", enabled: false, dataDir: null },
+    { source: "workbuddy", enabled: true, dataDir: null },
+    { source: "reasonix", enabled: true, dataDir: null },
     // 【暂时隐藏 Antigravity 系】
     // { source: "antigravity", enabled: false, dataDir: null },
     // { source: "antigravity-ide", enabled: false, dataDir: null },
   ],
+  sourceVisibility: {
+    order: ["zcode", "codex", "dsh", "workbuddy", "reasonix"],
+    hidden: [],
+    initialized: false,
+  },
   schedule: { hourly: false, hourlyInterval: 1, daily: false, dailyTime: "23:30", autoStart: false, minimizeToTray: true, notifyOnSuccess: false },
   totalMode: "full",
   theme: "light",
@@ -33,15 +40,18 @@ const defaultConfig: AppConfig = {
   },
 };
 
+/** 「全部」汇总视图的虚拟源 id：查询时由 querySource 归一化为 null（后端 null = 不按源过滤） */
+export const ALL_SOURCES = "all";
+
 export const useAppStore = defineStore("app", {
   state: () => ({
     config: { ...defaultConfig } as AppConfig,
     loaded: false,
     activePage: "overview" as "overview" | "detail" | "costs" | "billing" | "log" | "settings",
-    activeSource: "zcode" as string,
+    activeSource: ALL_SOURCES as string,
     // 数据源清单（id/name 来自后端适配器，唯一事实源；enabled 为磁盘配置中的状态）
     sources: [] as SourceInfo[],
-    sync: { running: false, stage: "idle" as SyncStage, stageLabel: "", percent: 0, message: "", lastSyncAt: null } as SyncProgress & { lastSyncAt: number | null },
+    sync: { running: false, stage: "idle" as SyncStage, stageLabel: "", percent: 0, message: "", lastSyncAt: null, localOnly: false } as SyncProgress & { lastSyncAt: number | null },
     syncing: false,
     syncDialogOpen: false,
     syncStartError: "",
@@ -51,7 +61,34 @@ export const useAppStore = defineStore("app", {
     isDark: (s) => s.config.theme === "dark",
     totalMode: (s) => s.config.totalMode,
     isSourceEnabled: (s) => (source: string) => !!s.config.sources.find((item) => item.source === source)?.enabled,
-    sourceName: (s) => (source: string) => s.sources.find((item) => item.id === source)?.name || source,
+    sourceName: (s) => (source: string) => (source === ALL_SOURCES ? "全部" : s.sources.find((item) => item.id === source)?.name || source),
+    /** 传给后端查询的源参数：「全部」归一化为 null（后端 null = 不按源过滤，即各分类累加） */
+    querySource: (s) => (s.activeSource === ALL_SOURCES ? null : s.activeSource),
+    /** 顶栏「全部」圆点：任一可见源已启用即亮 */
+    anyVisibleSourceEnabled(): boolean {
+      return this.visibleSources.some((item) => this.isSourceEnabled(item.id));
+    },
+    /** 当前激活源是否有数据可看（「全部」= 任一可见源启用） */
+    activeSourceEnabled(): boolean {
+      return this.activeSource === ALL_SOURCES ? this.anyVisibleSourceEnabled : this.isSourceEnabled(this.activeSource);
+    },
+    /** 按 sourceVisibility.order 排序后的全部来源（含隐藏项，供设置页排序用） */
+    orderedSources: (s) => {
+      const vis = s.config.sourceVisibility;
+      const rank = new Map((vis.order || []).map((id, i) => [id, i]));
+      return [...s.sources].sort(
+        (a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER)
+      );
+    },
+    /** 顶栏可见来源：按 order 排序 + 过滤 hidden */
+    visibleSources: (s) => {
+      const vis = s.config.sourceVisibility;
+      const hidden = new Set(vis.hidden || []);
+      const rank = new Map((vis.order || []).map((id, i) => [id, i]));
+      return [...s.sources]
+        .filter((item) => !hidden.has(item.id))
+        .sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
+    },
   },
   actions: {
     async load() {
@@ -76,7 +113,12 @@ export const useAppStore = defineStore("app", {
       try {
         this.sources = await api.listSources();
       } catch {
-        this.sources = this.config.sources.map((s) => ({ id: s.source, name: s.source, enabled: s.enabled }));
+        this.sources = this.config.sources.map((s) => ({ id: s.source, name: s.source, enabled: s.enabled, visible: true }));
+      }
+      // 兜底：当前激活项若被隐藏或已不存在，回退到「全部」；「全部」本身永远合法
+      if (this.activeSource !== ALL_SOURCES) {
+        const visibleIds = this.visibleSources.map((s) => s.id);
+        if (!visibleIds.includes(this.activeSource)) this.activeSource = ALL_SOURCES;
       }
     },
     async loadDataDir() {
@@ -103,6 +145,43 @@ export const useAppStore = defineStore("app", {
     },
     setActiveSource(source: string) {
       this.activeSource = source;
+    },
+    /** 切换顶栏项的显示/隐藏（隐藏 ≠ 停用同步） */
+    async setSourceVisible(source: string, visible: boolean) {
+      const vis = this.config.sourceVisibility;
+      const hidden = new Set(vis.hidden || []);
+      if (visible) hidden.delete(source);
+      else hidden.add(source);
+      vis.hidden = Array.from(hidden);
+      // 若隐藏的是当前激活项，自动回退到「全部」
+      if (!visible && this.activeSource === source) this.activeSource = ALL_SOURCES;
+      await this.save();
+    },
+    /**
+     * 排序：将 source 移动到 targetIndex（可见/全部项在 orderedSources 中的下标）。
+     * 直接重写 order 数组并持久化。
+     */
+    async moveSource(source: string, targetIndex: number) {
+      const vis = this.config.sourceVisibility;
+      const order = this.orderedSources.map((s) => s.id);
+      const from = order.indexOf(source);
+      if (from < 0) return;
+      const to = Math.max(0, Math.min(targetIndex, order.length - 1));
+      if (from === to) return;
+      const [moved] = order.splice(from, 1);
+      order.splice(to, 0, moved);
+      vis.order = order;
+      await this.save();
+    },
+    /** 将来源上移一位 */
+    async moveSourceUp(source: string) {
+      const idx = this.orderedSources.findIndex((s) => s.id === source);
+      if (idx > 0) await this.moveSource(source, idx - 1);
+    },
+    /** 将来源下移一位 */
+    async moveSourceDown(source: string) {
+      const idx = this.orderedSources.findIndex((s) => s.id === source);
+      if (idx >= 0 && idx < this.orderedSources.length - 1) await this.moveSource(source, idx + 1);
     },
     setPage(page: "overview" | "detail" | "costs" | "billing" | "log" | "settings") {
       this.activePage = page;

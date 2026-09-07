@@ -85,7 +85,8 @@ function todaySummary() {
   try {
     const cfg = config.loadConfig();
     const s = db.getSummary(cfg.totalMode || "full");
-    return s && s.todayTokens >= 0 ? s.todayTokens : null;
+    // 无记录时返回 null（托盘显示「今日用量 —」）；todayTokens 恒 >= 0，不能用其判断空态
+    return s && s.todayRecordCount > 0 ? s.todayTokens : null;
   } catch {
     return null;
   }

@@ -6,6 +6,7 @@ import { useAppStore } from "./app";
 
 let trendRequestId = 0;
 let overviewRequestId = 0;
+let recordsRequestId = 0;
 
 export const useUsageStore = defineStore("usage", {
   state: () => ({
@@ -13,12 +14,13 @@ export const useUsageStore = defineStore("usage", {
     devices: [] as DeviceMeta[],
     deviceBreakdowns: [] as DeviceBreakdown[],
     trend: [] as { date: string; total: number; models?: Record<string, number> }[],
-    heatmap: [] as { date: string; total: number }[],
+    heatmap: [] as { date: string; total: number; cost?: number }[],
     aggregate: [] as AggregateRow[],
     records: [] as UsageRecord[],
     recordsTotal: 0,
     loading: false,
     loadError: "",
+    recordsError: "", // 明细页专用错误：与总览/趋势错误分离，避免跨页串扰
     trendDays: 7, // 趋势图当前范围（天），默认「近七天」
     selectedDeviceId: null as string | null, // null 表示查看全部电脑数据
   }),
@@ -42,8 +44,9 @@ export const useUsageStore = defineStore("usage", {
       const app = useAppStore();
       const mode = app.totalMode;
       const deviceId = this.selectedDeviceId;
-      const source = app.activeSource;
+      const source = app.querySource;
       const requestId = ++overviewRequestId;
+      const trendDaysAtCall = this.trendDays;
       this.loading = true;
       try {
         // 热力图滚动一年窗口：今天往前 364 天 → 今天（最右侧恒为今天）
@@ -63,7 +66,9 @@ export const useUsageStore = defineStore("usage", {
         this.summary = summary;
         this.devices = devices;
         this.deviceBreakdowns = deviceBreakdowns;
-        this.trend = trend;
+        // 用户在本请求在途期间可能已通过 loadTrend 切换了天数：此时 overview
+        // 带回的是旧天数数据，写回会造成「标签 30 天 / 数据 7 天」错位，直接丢弃
+        if (trendDaysAtCall === this.trendDays) this.trend = trend;
         this.heatmap = heatmap;
         this.loadError = "";
       } catch (e) {
@@ -78,10 +83,14 @@ export const useUsageStore = defineStore("usage", {
       this.selectedDeviceId = deviceId;
       await this.loadOverview();
     },
-    /** 刷新设备列表（明细页设备下拉独立于总览加载数据时使用） */
+    /** 刷新设备列表（明细页设备下拉独立于总览加载数据时使用）；失败保留旧列表 */
     async refreshDevices() {
       const app = useAppStore();
-      this.devices = await api.getDevices(app.totalMode, app.activeSource);
+      try {
+        this.devices = await api.getDevices(app.totalMode, app.querySource);
+      } catch {
+        /* 保留旧设备列表，避免下拉突然清空 */
+      }
     },
     async setDevice(deviceId: string | null) {
       this.selectedDeviceId = deviceId;
@@ -91,17 +100,38 @@ export const useUsageStore = defineStore("usage", {
       const app = useAppStore();
       this.trendDays = days;
       const requestId = ++trendRequestId;
-      const next = await api.getTrend(app.totalMode, days, this.selectedDeviceId, app.activeSource);
-      if (requestId === trendRequestId) this.trend = next;
+      try {
+        const next = await api.getTrend(app.totalMode, days, this.selectedDeviceId, app.querySource);
+        if (requestId === trendRequestId) {
+          this.trend = next;
+          this.loadError = ""; // 成功后清掉此前失败留下的提示
+        }
+      } catch (e) {
+        // 保留旧趋势数据并给出可见提示，避免切换天数后图表「看似没反应」
+        if (requestId === trendRequestId) this.loadError = e instanceof Error ? e.message : "趋势数据加载失败";
+      }
     },
     async loadAggregate(dim: "model" | "provider" | "device" | "source", from: number | null, to: number | null) {
       const app = useAppStore();
-      this.aggregate = (await api.getAggregate(app.totalMode, dim, from, to, app.activeSource)) as AggregateRow[];
+      try {
+        this.aggregate = (await api.getAggregate(app.totalMode, dim, from, to, app.querySource)) as AggregateRow[];
+        this.loadError = "";
+      } catch (e) {
+        this.loadError = e instanceof Error ? e.message : "聚合数据加载失败";
+      }
     },
     async loadRecords(filter: Parameters<typeof api.getRecords>[0]) {
-      const res = await api.getRecords(filter);
-      this.records = res.records;
-      this.recordsTotal = res.total;
+      // 竞态防护：快速连切筛选/翻页时旧响应不得覆盖新筛选的结果
+      const requestId = ++recordsRequestId;
+      try {
+        const res = await api.getRecords(filter);
+        if (requestId !== recordsRequestId) return;
+        this.records = res.records;
+        this.recordsTotal = res.total;
+        this.recordsError = "";
+      } catch (e) {
+        if (requestId === recordsRequestId) this.recordsError = e instanceof Error ? e.message : "明细数据加载失败";
+      }
     },
   },
 });

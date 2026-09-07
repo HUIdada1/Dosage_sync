@@ -1,4 +1,4 @@
-// IPC 命令注册：主进程 ipcMain.handle 处理器，对应前端 src/api/ipc.ts 的 21 个命令
+// IPC 命令注册：主进程 ipcMain.handle 处理器，对应前端 src/api/ipc.ts 的 34 个命令
 // 每个 handler 返回 camelCase 结构，与前端类型一致
 "use strict";
 const path = require("node:path");
@@ -30,11 +30,17 @@ function register(ctx) {
   ipcMain.handle("load_config", () => {
     const cfg = config.loadConfig();
     applyBillingFx(cfg);
+    // 密码不回传明文：渲染进程只拿掩码，防止渲染层注入/调试口读取 WebDAV 凭据
+    if (cfg.webdav) cfg.webdav.password = cfg.webdav.password ? config.PASSWORD_MASK : "";
     return cfg;
   });
 
   ipcMain.handle("save_config", (_e, args) => {
     try {
+      // 掩码 = 用户未修改密码：回填磁盘上的真实密码后再保存
+      if (args.config && args.config.webdav && args.config.webdav.password === config.PASSWORD_MASK) {
+        args.config.webdav.password = config.loadConfig().webdav.password;
+      }
       config.saveConfig(args.config);
       applyBillingFx(args.config);
       const localId = db.getLocalDeviceId();
@@ -50,7 +56,12 @@ function register(ctx) {
 
   ipcMain.handle("test_webdav", async (_e, args) => {
     try {
-      return await webdav.test(args.config);
+      // 掩码密码回填真实值再测试（用户未改密码时界面传回的是掩码）。
+      // 独立配置快照：不走同步的取消信号，避免测试连接被「取消同步」误伤
+      const saved = config.loadConfig().webdav;
+      const testCfg = { ...(args.config || {}) };
+      if (testCfg.password === config.PASSWORD_MASK) testCfg.password = saved.password;
+      return await webdav.test(testCfg);
     } catch (e) {
       return { ok: false, message: e.message };
     }
@@ -58,9 +69,21 @@ function register(ctx) {
 
   // ===== 数据源 =====
   // 来源清单（唯一事实源是各适配器的 name 字段；前端顶栏/空状态/设置页均由此渲染）
+  // 返回顺序遵循 config.sourceVisibility.order，并带 visible 字段供顶栏显隐
   ipcMain.handle("list_sources", () => {
     const cfg = config.loadConfig();
-    return adapter.sources.map((s) => ({ id: s.id, name: s.name, enabled: sourceEnabled(cfg, s.id) }));
+    const vis = (cfg.sourceVisibility || { order: [], hidden: [] });
+    const hidden = new Set(vis.hidden || []);
+    const order = vis.order || [];
+    const rank = new Map(order.map((id, i) => [id, i]));
+    return adapter.sources
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        enabled: sourceEnabled(cfg, s.id),
+        visible: !hidden.has(s.id),
+      }))
+      .sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
   });
 
   ipcMain.handle("detect_source", (_e, args) => {
@@ -136,7 +159,8 @@ function register(ctx) {
       // 同步进行中拒绝删除：否则已合并的该设备数据会在本次同步尾段被重新写回
       if (sync.progress().running) return { ok: false, message: "同步正在进行中，请稍后再删除设备" };
       const cfg = config.loadConfig();
-      if (cfg.webdav && cfg.webdav.endpoint) {
+      const hasRemote = !!(cfg.webdav && cfg.webdav.endpoint && String(cfg.webdav.endpoint).trim());
+      if (hasRemote) {
         await webdav.remove(
           webdav.joinUrl(cfg.webdav.endpoint, cfg.webdav.root, `${sync.DEVICES_DIR}/${deviceId}.json`),
           cfg.webdav
@@ -147,8 +171,14 @@ function register(ctx) {
         );
       }
       db.deleteDeviceData(deviceId);
-      db.addLog("merge", "info", `已删除退役设备 ${deviceId}（本地记录与 WebDAV 数据）`);
-      return { ok: true, message: "设备已删除" };
+      db.addLog("merge", "info", hasRemote ? `已删除退役设备 ${deviceId}（本地记录与 WebDAV 数据）` : `已删除退役设备 ${deviceId} 的本地记录（未配置 WebDAV，远端未动）`);
+      // 未配置 WebDAV 时只删了本地：若远端仍存有该设备数据，重新配置后会全量拉回（merged 记账已随删除清空）
+      return {
+        ok: true,
+        message: hasRemote
+          ? "设备已删除"
+          : "设备本地记录已删除；未配置 WebDAV，若远端存有该设备数据，重新配置并同步后会再次拉取",
+      };
     } catch (e) {
       return { ok: false, message: `删除设备失败：${e.message}` };
     }
@@ -160,7 +190,7 @@ function register(ctx) {
       const ext = args.format === "json" ? "json" : "csv";
       // filter 为空对象/缺省时导出全部明细；DetailView 会传当前筛选条件与日期范围
       const filter = args.filter && typeof args.filter === "object" ? args.filter : {};
-      const content = args.format === "json" ? db.exportJson(filter) : db.exportCsv(filter);
+      const { content, count } = args.format === "json" ? db.exportJson(filter) : db.exportCsv(filter);
       const dir = app.getPath("downloads");
       // 文件名精确到毫秒，避免同一秒内多次导出互相覆盖
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 23);
@@ -168,9 +198,10 @@ function register(ctx) {
       // CSV 加 UTF-8 BOM，Excel 打开中文不乱码；JSON 无需 BOM
       const buf = args.format === "json" ? content : "\uFEFF" + content;
       await fs.promises.writeFile(file, buf, "utf8");
-      return { ok: true, path: file, message: "导出成功" };
+      // 空结果集明确提示（导出文件仍生成，仅含表头/空数组）
+      return { ok: true, path: file, message: count > 0 ? `导出成功（${count} 条记录）` : "导出成功，但当前筛选条件下没有任何记录" };
     } catch (e) {
-      return { ok: false, path: null, message: e.message };
+      return { ok: false, path: null, message: `导出失败：${e.message}` };
     }
   });
 
@@ -251,6 +282,72 @@ function register(ctx) {
   });
 
   ipcMain.handle("get_data_dir", () => config.dataDir());
+
+  // 数据缓存目录信息：当前目录 + 默认目录 + 是否已自定义（设置页「数据缓存目录」展示与校验用）
+  ipcMain.handle("get_data_dir_info", () => {
+    const custom = config.customDataDir();
+    return {
+      dataDir: config.dataDir(),
+      defaultDataDir: config.defaultDataDir(),
+      isCustom: !!custom,
+    };
+  });
+
+  // 选择文件夹：弹出系统目录选择对话框（设置页「浏览」按钮）
+  ipcMain.handle("browse_data_dir", async () => {
+    const { dialog } = require("electron");
+    const result = await dialog.showOpenDialog({
+      title: "选择数据缓存目录",
+      defaultPath: config.dataDir(),
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+      return { ok: false, canceled: true, path: null };
+    }
+    return { ok: true, canceled: false, path: result.filePaths[0] };
+  });
+
+  // 设置数据缓存目录：校验 → （可选）迁移旧数据 → 保存自定义 → 返回结果（重启后生效）
+  ipcMain.handle("set_data_dir", (_e, args) => {
+    const target = args && args.path;
+    const migrate = !!(args && args.migrate);
+    try {
+      // 同步进行中拒绝切换，避免写库过程中目录失效
+      if (sync.progress().running) return { ok: false, message: "同步正在进行中，请稍后再修改目录" };
+      const check = config.validateDataDir(target);
+      if (!check.ok) return check;
+      const newDir = check.resolved;
+      const oldDir = config.dataDir();
+      // 先记日志（写当前库）再迁移：迁移会复制旧库到新目录，这条日志随之进入新库
+      db.addLog("merge", "info",
+        migrate
+          ? `数据缓存目录已迁移到 ${newDir}（原目录数据已复制，重启后生效）`
+          : `数据缓存目录已更改为 ${newDir}（保留原目录，重启后生效）`);
+      const migrated = migrate && config.migrateDataDir(oldDir, newDir);
+      config.setCustomDataDir(newDir);
+      return {
+        ok: true,
+        message: migrated
+          ? `目录已更改并迁移缓存数据，重启应用后生效`
+          : `目录已更改，重启应用后生效`,
+        migrated,
+        dataDir: newDir,
+        defaultDataDir: config.defaultDataDir(),
+      };
+    } catch (e) {
+      return { ok: false, message: `设置数据目录失败：${e.message}` };
+    }
+  });
+
+  // 恢复默认数据缓存目录（清空自定义，回退 ~/.Dosage_sync）
+  ipcMain.handle("reset_data_dir", () => {
+    try {
+      config.clearCustomDataDir();
+      return { ok: true, message: "已恢复默认目录，重启应用后生效", dataDir: config.defaultDataDir(), defaultDataDir: config.defaultDataDir() };
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+  });
 
   ipcMain.handle("get_app_version", () => app.getVersion());
 

@@ -195,7 +195,24 @@ function seedDefaultPrices(db) {
 
 // ===== 明细写入（幂等） =====
 
-/** 将 UsageRecord（camelCase）批量写入，返回写入条数 */
+/** 数值字段统一钳制：非有限/负数 → 0，并封顶到 SQLite INTEGER 可安全绑定的范围
+ * （node:sqlite 只接受 Number.isSafeInteger 内的整数，超大值会抛错导致整批回滚）。
+ * 注意保留小数：antigravity 的配额点（如 0.35）是 token 字段中唯一的小数来源，
+ * Math.floor 会把小于 1 点的消耗归零——整数走封顶取整，小数原样保留为 REAL。 */
+const MAX_TOKEN = Number.MAX_SAFE_INTEGER;
+function safeToken(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  if (n > MAX_TOKEN) return MAX_TOKEN;
+  return Number.isInteger(n) ? n : n;
+}
+
+/** 文本字段兜底：null/undefined/非字符串 → 空串（NOT NULL 列防御） */
+function safeText(v) {
+  return typeof v === "string" ? v : v == null ? "" : String(v);
+}
+
+/** 将 UsageRecord（camelCase）批量写入，返回写入条数；字段缺失/类型异常的行就地归一化，不抛错 */
 function insertRecords(records) {
   if (!records || records.length === 0) return 0;
   const db = get();
@@ -206,23 +223,35 @@ function insertRecords(records) {
      started_at, completed_at, duration_ms, status)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
+  let written = 0;
   db.exec("BEGIN");
   try {
     for (const r of records) {
+      // 跳过无法定位的畸形行（无 id 或无时间戳无法归档），不阻断整批
+      if (!r || typeof r.id !== "string" || !r.id) continue;
+      const startedAt = Number.isFinite(Number(r.startedAt)) ? Math.floor(Number(r.startedAt)) : null;
+      if (startedAt === null) continue;
+      const completedAt = Number(r.completedAt);
+      const durationMs = Number(r.durationMs);
       stmt.run(
-        r.id, r.deviceId, r.deviceName ?? "", r.source ?? "unknown", r.providerId ?? "", r.modelId ?? "",
+        r.id, safeText(r.deviceId), safeText(r.deviceName), safeText(r.source) || "unknown",
+        safeText(r.providerId), safeText(r.modelId),
         r.variant ?? null, r.taskType ?? null, r.sessionId ?? null, r.agent ?? null, r.mode ?? null,
-        r.inputTokens ?? 0, r.outputTokens ?? 0, r.reasoningTokens ?? 0,
-        r.cacheCreationTokens ?? 0, r.cacheReadTokens ?? 0,
-        r.startedAt ?? 0, r.completedAt ?? null, r.durationMs ?? null, r.status ?? "success"
+        safeToken(r.inputTokens), safeToken(r.outputTokens), safeToken(r.reasoningTokens),
+        safeToken(r.cacheCreationTokens), safeToken(r.cacheReadTokens),
+        startedAt,
+        Number.isSafeInteger(completedAt) ? completedAt : null,
+        Number.isSafeInteger(durationMs) ? durationMs : null,
+        safeText(r.status) || "success"
       );
+      written++;
     }
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
     throw e;
   }
-  return records.length;
+  return written;
 }
 
 // ===== meta / checkpoint / device_meta =====
@@ -468,17 +497,24 @@ function replacePrices(prices, clockMs) {
     const stmt = db.prepare(
       "INSERT INTO model_price (provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, currency, effective_from, effective_to, updated_at, updated_by, source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
     );
+    const seenKeys = new Set(); // 畸形远端文件可能携带重复 (provider,model,source,effective_from) 行，去重防唯一索引冲突
     for (const p of Array.isArray(prices) ? prices : []) {
       if (!p || typeof p.modelId !== "string" || !p.modelId) continue;
+      const providerId = p.providerId ?? null;
+      const from = Math.max(0, Math.floor(Number(p.effectiveFrom) || 0));
+      const source = ["manual", "remote", "builtin"].includes(p.source) ? p.source : "manual";
+      const dedupeKey = `${providerId ?? ""}|${p.modelId}|${source}|${from}`;
+      if (seenKeys.has(dedupeKey)) continue;
+      seenKeys.add(dedupeKey);
       stmt.run(
-        p.providerId ?? null, p.modelId,
+        providerId, p.modelId,
         num0(p.inputPerM), num0(p.outputPerM), num0(p.cacheReadPerM), num0(p.cacheWritePerM),
         p.currency === "USD" ? "USD" : "CNY",
-        Math.max(0, Math.floor(Number(p.effectiveFrom) || 0)),
+        from,
         p.effectiveTo == null ? null : Number(p.effectiveTo) || null,
         Number(p.updatedAt) || Date.now(),
         typeof p.updatedBy === "string" ? p.updatedBy : "",
-        ["manual", "remote", "builtin"].includes(p.source) ? p.source : "manual"
+        source
       );
     }
     setMeta("prices_local_updated", String(Math.floor(Number(clockMs) || Date.now())));
@@ -557,7 +593,10 @@ function getSummary(mode, targetDeviceId = null, source = null) {
   // 本月 1 日 / 上月 1 日 / 上月同日零点（本地时区）：本月费用 + 较上月同期
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
   const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime();
-  const prevMonthSameDay = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()).getTime();
+  // 同日需钳制到上月末（如 3/31 → 2/28）：JS Date 对不存在的日期会溢出进位到下月，
+  // 不钳制时「上月同期」实际会多算上月末到下月溢出日的费用
+  const prevMonthDays = new Date(now.getFullYear(), now.getMonth(), 0).getDate();
+  const prevMonthSameDay = new Date(now.getFullYear(), now.getMonth() - 1, Math.min(now.getDate(), prevMonthDays)).getTime();
   const todayScope = {
     clauses: [...selectedScope.clauses, "started_at >= ?"],
     params: [...selectedScope.params, t0],
@@ -947,6 +986,7 @@ function allRecords(filter = {}) {
     });
 }
 
+/** 导出 CSV；返回 { content, count }，count 用于空结果提示 */
 function exportCsv(filter = {}) {
   const records = allRecords(filter);
   const esc = (v) => {
@@ -964,11 +1004,13 @@ function exportCsv(filter = {}) {
      r.priced ? (r.costDisplay ?? 0).toFixed(6) : ""]
       .map(esc).join(",")
   );
-  return [head, ...rows].join("\r\n");
+  return { content: [head, ...rows].join("\r\n"), count: records.length };
 }
 
+/** 导出 JSON；返回 { content, count }，count 用于空结果提示 */
 function exportJson(filter = {}) {
-  return JSON.stringify(allRecords(filter), null, 2);
+  const records = allRecords(filter);
+  return { content: JSON.stringify(records, null, 2), count: records.length };
 }
 
 /** LIKE 模式转义（配 ESCAPE '\' 使用），防止设备 ID 中的 %/_ 干扰前缀匹配 */

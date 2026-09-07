@@ -4,6 +4,7 @@
 "use strict";
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { normalizeModel, providerName } = require("./adapter-zcode.cjs");
 
 const ID = "codex";
@@ -83,6 +84,9 @@ function extract(dir, deviceId, deviceName, since) {
     const events = [];
     let sessionId = sessionIdFromFile(file);
     let model = null;
+    // fallback 序号须混入文件维度：会话 resume 后同一 sessionId 会写入新的
+    // rollout 文件，纯文件内序号会让两个文件的无 ordinal 事件 id 碰撞，被去重吞掉
+    const fileSeqSalt = crypto.createHash("sha1").update(file).digest("hex").slice(0, 8);
     let fallbackSequence = 0;
 
     for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
@@ -106,8 +110,10 @@ function extract(dir, deviceId, deviceName, since) {
       const startedAt = new Date(item.timestamp).getTime();
       if (!Number.isFinite(startedAt) || startedAt <= since) continue;
 
+      // ordinal 前提：Codex 的 ordinal 是全 session 单调递增的（resume 后的新文件延续编号），
+      // 故带 ordinal 的事件不存在跨文件碰撞；仅无 ordinal 的 fallback 分支需要文件盐
       events.push({
-        sequence: item.ordinal ?? fallbackSequence,
+        sequence: item.ordinal ?? `${fileSeqSalt}:${fallbackSequence}`,
         startedAt,
         usage,
       });

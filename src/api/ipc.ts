@@ -2,6 +2,7 @@
 import type {
   AppConfig, Summary, DeviceMeta, DeviceBreakdown, SyncLog, SyncProgress, SourceHealth, SourceInfo, UsageRecord, TotalMode, AggregateRow,
   PriceEntry, PriceRow, UnpricedModel, ImportPreview, ImportPreviewItem, RemotePricingConfig,
+  DataDirInfo, SetDataDirResult,
 } from "../types";
 import { mock } from "./mock";
 
@@ -41,7 +42,8 @@ export const getSummary = (mode: TotalMode, deviceId?: string | null, source?: s
 export const getDevices = (mode: TotalMode, source?: string | null) => call<DeviceMeta[]>("get_devices", { mode, source });
 export const getDeviceBreakdowns = (mode: TotalMode, deviceId?: string | null, source?: string | null) => call<DeviceBreakdown[]>("get_device_breakdowns", { mode, deviceId, source });
 export const getTrend = (mode: TotalMode, days: number, deviceId?: string | null, source?: string | null) => call<{ date: string; total: number; cost: number; models?: Record<string, number> }[]>("get_trend", { mode, days, deviceId, source });
-export const getHeatmap = (mode: TotalMode, start: string, end: string, deviceId?: string | null, source?: string | null) => call<{ date: string; total: number }[]>("get_heatmap", { mode, start, end, deviceId, source });
+// 热力图行后端实际返回 cost（每日费用，DayModal 展示用），类型如实声明
+export const getHeatmap = (mode: TotalMode, start: string, end: string, deviceId?: string | null, source?: string | null) => call<{ date: string; total: number; cost?: number }[]>("get_heatmap", { mode, start, end, deviceId, source });
 export const getAggregate = (mode: TotalMode, dim: "model" | "provider" | "device" | "source", from: number | null, to: number | null, source?: string | null) =>
   call<AggregateRow[]>("get_aggregate", { mode, dim, from, to, source });
 export const getRecords = (filter: {
@@ -95,6 +97,10 @@ export const getRemotePricingStatus = () =>
 // ===== 其它 =====
 export const openDataDir = () => call<void>("open_data_dir");
 export const getDataDir = () => call<string>("get_data_dir");
+export const getDataDirInfo = () => call<DataDirInfo>("get_data_dir_info");
+export const browseDataDir = () => call<{ ok: boolean; canceled?: boolean; path: string | null }>("browse_data_dir");
+export const setDataDir = (path: string, migrate: boolean) => call<SetDataDirResult>("set_data_dir", { path, migrate });
+export const resetDataDir = () => call<SetDataDirResult>("reset_data_dir");
 export const getAppVersion = () => call<string>("get_app_version");
 export const getIsPortable = () => call<boolean>("get_is_portable");
 export const resetLocalCache = () => call<{ ok: boolean; message: string }>("reset_local_cache");

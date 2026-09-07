@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useAppStore } from "../stores/app";
 import { useUsageStore } from "../stores/usage";
 import * as api from "../api/ipc";
@@ -9,6 +9,8 @@ import type { TotalMode, SourceHealth } from "../types";
 const app = useAppStore();
 const usage = useUsageStore();
 const cfg = app.config;
+// 与后端 electron/backend/config.cjs 的 PASSWORD_MASK 一致：掩码值视为「未修改密码」
+const PASSWORD_MASK = "••••••••";
 
 const testResult = ref<{ ok: boolean; message: string; latencyMs?: number } | null>(null);
 const saveResult = ref<{ ok: boolean; message: string } | null>(null);
@@ -20,6 +22,61 @@ const exportResult = ref<{ ok: boolean; message: string } | null>(null);
 const resetResult = ref<{ ok: boolean; message: string } | null>(null);
 let exportResultTimer = 0;
 let resetResultTimer = 0;
+
+// ===== 数据缓存目录 =====
+const dataDirInfo = ref<{ dataDir: string; defaultDataDir: string; isCustom: boolean } | null>(null);
+const dataDirInput = ref(""); // 手动输入的新路径（仅编辑态使用）
+const dataDirResult = ref<{ ok: boolean; message: string } | null>(null);
+const editingDataDir = ref(false);
+let dataDirResultTimer = 0;
+
+async function loadDataDirInfo() {
+  try {
+    dataDirInfo.value = await api.getDataDirInfo();
+    dataDirInput.value = dataDirInfo.value?.dataDir || "";
+  } catch {
+    dataDirInfo.value = null;
+  }
+}
+/** 浏览选择目录（系统对话框） */
+async function browseDataDir() {
+  const r = await api.browseDataDir();
+  if (r?.ok && r.path) {
+    dataDirInput.value = r.path;
+    editingDataDir.value = true;
+  }
+}
+function startEditDataDir() {
+  dataDirInput.value = dataDirInfo.value?.dataDir || "";
+  editingDataDir.value = true;
+}
+/** 保存新目录：可选迁移旧缓存数据（默认迁移） */
+async function applyDataDir(migrate: boolean) {
+  const target = dataDirInput.value.trim();
+  const r = await api.setDataDir(target, migrate);
+  dataDirResult.value = r;
+  window.clearTimeout(dataDirResultTimer);
+  dataDirResultTimer = window.setTimeout(() => { dataDirResult.value = null; }, 8000);
+  if (r?.ok) {
+    editingDataDir.value = false;
+    dataDirInfo.value = { dataDir: r.dataDir || target, defaultDataDir: r.defaultDataDir || dataDirInfo.value?.defaultDataDir || "", isCustom: true };
+    app.dataDir = r.dataDir || target;
+  }
+}
+/** 恢复默认目录 */
+async function resetDataDir() {
+  const ok = window.confirm("确定恢复默认数据缓存目录吗？\n\n将回退到用户主目录下的 .Dosage_sync（重启后生效），当前自定义目录下的数据不会被删除。");
+  if (!ok) return;
+  const r = await api.resetDataDir();
+  dataDirResult.value = r;
+  window.clearTimeout(dataDirResultTimer);
+  dataDirResultTimer = window.setTimeout(() => { dataDirResult.value = null; }, 8000);
+  if (r?.ok) {
+    editingDataDir.value = false;
+    dataDirInfo.value = { dataDir: r.dataDir || "", defaultDataDir: r.defaultDataDir || "", isCustom: false };
+    app.dataDir = r.dataDir || "";
+  }
+}
 
 const presets = [
   { key: "feiniu", label: "飞牛 fnOS" },
@@ -35,8 +92,15 @@ onMounted(async () => {
   health.value = await api.healthSource();
   version.value = await api.getAppVersion();
   isPortable.value = await api.getIsPortable();
+  loadDataDirInfo();
 });
 
+// 密码框防误触：显示的是掩码，任何编辑（哪怕只删一个字符）都先清空，避免
+// 「残缺掩码」被后端当成新密码落盘（配合后端仅精确掩码才保留原密码的约定）
+function onPasswordInput() {
+  const v = cfg.webdav.password;
+  if (v !== PASSWORD_MASK && v.includes("•")) cfg.webdav.password = "";
+}
 async function save() {
   saving.value = true;
   try {
@@ -89,6 +153,58 @@ async function toggleSchedule(key: "hourly" | "daily" | "minimizeToTray" | "noti
 async function setTheme(theme: "light" | "dark") {
   app.applyTheme(theme);
   await autoSave();
+}
+
+// ===== 工具栏切换项自定义（显隐 + 排序） =====
+/** 排序列表：按 order 排序后的全部来源（含隐藏项），供拖拽与箭头使用 */
+const orderedSources = computed(() => app.orderedSources);
+
+function isVisible(source: string): boolean {
+  return !(app.config.sourceVisibility.hidden || []).includes(source);
+}
+
+async function toggleVisible(source: string) {
+  await app.setSourceVisible(source, !isVisible(source));
+}
+
+async function moveUp(source: string) {
+  await app.moveSourceUp(source);
+}
+
+async function moveDown(source: string) {
+  await app.moveSourceDown(source);
+}
+
+// —— 拖拽排序（HTML5 Drag and Drop）——
+const dragSource = ref<string | null>(null);
+const dragOverSource = ref<string | null>(null);
+
+function onDragStart(source: string, e: DragEvent) {
+  dragSource.value = source;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = "move";
+    // Firefox 需要 setData 才能启动拖拽
+    try { e.dataTransfer.setData("text/plain", source); } catch { /* 忽略 */ }
+  }
+}
+function onDragOver(source: string, e: DragEvent) {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+  if (dragOverSource.value !== source) dragOverSource.value = source;
+}
+function onDrop(source: string) {
+  const from = dragSource.value;
+  dragSource.value = null;
+  dragOverSource.value = null;
+  if (!from || from === source) return;
+  // 拖到目标项的位置（目标在有序列表中的下标）
+  const idx = orderedSources.value.findIndex((s) => s.id === source);
+  if (idx < 0) return;
+  app.moveSource(from, idx);
+}
+function onDragEnd() {
+  dragSource.value = null;
+  dragOverSource.value = null;
 }
 function openDataDir() {
   api.openDataDir();
@@ -156,7 +272,7 @@ async function resetCache() {
           </div>
           <div class="form-field"><label>地址</label><input class="f-input" v-model="cfg.webdav.endpoint" placeholder="https://dav.example.com/dav" /></div>
           <div class="form-field"><label>账号</label><input class="f-input" v-model="cfg.webdav.username" /></div>
-          <div class="form-field"><label>密码</label><input class="f-input" type="password" v-model="cfg.webdav.password" /></div>
+          <div class="form-field"><label>密码</label><input class="f-input" type="password" v-model="cfg.webdav.password" @input="onPasswordInput" placeholder="已保存密码显示为掩码；输入任意字符即进入修改，请填写完整新密码" /></div>
           <div class="form-field"><label>根目录</label><input class="f-input" v-model="cfg.webdav.root" placeholder="/dosage-sync" /></div>
           <div class="form-field"><label>电脑名</label><input class="f-input" v-model="cfg.deviceName" placeholder="如：公司笔记本" /></div>
           <div class="form-field full">
@@ -196,6 +312,51 @@ async function resetCache() {
               :title="app.isSourceEnabled(h.source) ? '停用数据源' : '启用数据源'"
               @click="toggleSource(h.source)"
             ></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <div class="sg-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7h8M8 12h8M8 17h8"/></svg>
+          工具栏切换项
+          <span class="sg-hint">拖拽或点击箭头调整顺序 · 关闭开关可隐藏</span>
+        </div>
+        <div class="visibility-list">
+          <div
+            v-for="(s, i) in orderedSources"
+            :key="s.id"
+            class="visibility-item"
+            :class="{ dragging: dragSource === s.id, 'drag-over': dragOverSource === s.id && dragSource !== s.id, hidden: !isVisible(s.id) }"
+            :draggable="true"
+            @dragstart="onDragStart(s.id, $event)"
+            @dragover="onDragOver(s.id, $event)"
+            @drop="onDrop(s.id)"
+            @dragend="onDragEnd"
+          >
+            <span class="drag-handle" title="拖拽排序">
+              <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
+            </span>
+            <div class="v-title">
+              <span class="v-name">{{ s.name }}</span>
+              <span class="v-sub">#{{ i + 1 }}</span>
+            </div>
+            <div class="v-actions">
+              <button class="icon-btn-sm" :disabled="i === 0" title="上移" @click="moveUp(s.id)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+              </button>
+              <button class="icon-btn-sm" :disabled="i === orderedSources.length - 1" title="下移" @click="moveDown(s.id)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+              </button>
+              <div
+                class="switch"
+                :class="{ on: isVisible(s.id) }"
+                role="switch"
+                :aria-checked="isVisible(s.id)"
+                :title="isVisible(s.id) ? '隐藏该项' : '显示该项'"
+                @click="toggleVisible(s.id)"
+              ></div>
+            </div>
           </div>
         </div>
       </div>
@@ -244,7 +405,29 @@ async function resetCache() {
         <div class="switch-row"><div class="s-left"><div class="s-title">导出 JSON</div><div class="s-desc">导出统一用量模型原始数据</div></div><button class="btn-outline" @click="exportData('json')">导出</button></div>
         <div v-if="exportResult" class="switch-row"><div class="s-left"><div class="s-desc" :style="{ color: exportResult.ok ? 'var(--ok)' : 'var(--err)', wordBreak: 'break-all' }">{{ exportResult.message }}</div></div></div>
         <div class="switch-row"><div class="s-left"><div class="s-title">清空本地缓存</div><div class="s-desc">删除本地明细与同步记账，WebDAV 数据不动，下次同步自动重拉</div></div><div style="display:flex;align-items:center;gap:10px"><span v-if="resetResult" class="hint" :style="{ color: resetResult.ok ? 'var(--ok)' : 'var(--err)' }">{{ resetResult.message }}</span><button class="btn-outline" @click="resetCache">清空</button></div></div>
-        <div class="switch-row"><div class="s-left"><div class="s-title">数据缓存目录</div><div class="s-desc">本地汇总库与配置的存放位置（SQLite 缓存）</div></div><span class="hint mono" style="max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ app.dataDir || "—" }}</span></div>
+        <div class="switch-row" style="align-items: flex-start">
+          <div class="s-left">
+            <div class="s-title">数据缓存目录</div>
+            <div class="s-desc">本地汇总库（SQLite 缓存）与配置文件的存放位置</div>
+            <div class="s-desc" style="color: var(--text-3); margin-top: 2px">默认：{{ dataDirInfo?.defaultDataDir || '用户主目录/.Dosage_sync' }}<span v-if="dataDirInfo?.isCustom" style="color: var(--accent-strong)"> · 已自定义</span></div>
+            <div v-if="!editingDataDir" class="s-desc mono" style="word-break: break-all; margin-top: 4px">{{ dataDirInfo?.dataDir || '—' }}</div>
+            <div v-else class="data-dir-edit">
+              <input class="f-input mono" v-model="dataDirInput" placeholder="请输入目录绝对路径" style="width: 100%" />
+              <div class="data-dir-actions">
+                <button class="btn-outline" @click="browseDataDir">浏览…</button>
+                <button class="btn-outline" @click="applyDataDir(true)" title="把原目录的汇总库与配置复制到新目录">迁移并保存</button>
+                <button class="btn-outline" @click="applyDataDir(false)" title="保留原目录数据，在新目录新建缓存">仅新建保存</button>
+                <button class="btn-outline" @click="editingDataDir = false">取消</button>
+              </div>
+              <div class="s-desc" style="color: var(--text-3)">修改后需重启应用生效；迁移会复制原目录数据，新建则保留原目录并在新目录重建缓存。</div>
+            </div>
+            <div v-if="dataDirResult" class="s-desc" :style="{ color: dataDirResult.ok ? 'var(--ok)' : 'var(--err)', marginTop: 4 }">{{ dataDirResult.message }}</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px; flex-shrink: 0">
+            <button v-if="!editingDataDir" class="btn-outline" @click="startEditDataDir">修改</button>
+            <button v-if="dataDirInfo?.isCustom && !editingDataDir" class="btn-outline" @click="resetDataDir" title="恢复默认目录（当前自定义目录数据保留）">恢复默认</button>
+          </div>
+        </div>
         <div class="switch-row"><div class="s-left"><div class="s-title">打开数据目录</div><div class="s-desc">在资源管理器中打开缓存目录</div></div><button class="btn-outline" @click="openDataDir">打开</button></div>
         <div class="switch-row"><div class="s-left"><div class="s-title">版本</div><div class="s-desc">Dosage Sync</div></div><span class="hint mono">{{ version }}</span></div>
         <div class="switch-row"><div class="s-left"><div class="s-title">作者</div><div class="s-desc">用量同步工具</div></div><span class="hint">沐辉玄制作</span></div>

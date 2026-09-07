@@ -10,12 +10,14 @@ let timer: number | null = null;
 
 const stages = [
   { key: "extract", label: "获取本地数据" },
-  { key: "upload", label: "压缩并上传" },
-  { key: "download", label: "下载其它电脑" },
+  { key: "upload", label: "压缩并上传", remote: true },
+  { key: "download", label: "下载其它电脑", remote: true },
   { key: "merge", label: "解压并合并" },
   { key: "done", label: "同步完成" },
 ];
-const currentIndex = computed(() => stages.findIndex((s) => s.key === app.sync.stage));
+// 本地模式（未配置 WebDAV）：不展示远程上传/下载阶段，仅保留本地抽取与合并
+const visibleStages = computed(() => stages.filter((s) => !app.sync.localOnly || !s.remote));
+const currentIndex = computed(() => visibleStages.value.findIndex((s) => s.key === app.sync.stage));
 const canClose = computed(() => !app.sync.running && !app.syncing);
 
 async function refresh() {
@@ -50,10 +52,11 @@ onBeforeUnmount(stopPolling);
         <p>{{ app.sync.message || "正在准备同步任务" }}</p>
       </div>
       <div class="sync-stages">
-        <div v-for="(stage, index) in stages" :key="stage.key" class="sync-stage" :class="{ active: index === currentIndex, done: index < currentIndex }">
+        <div v-for="(stage, index) in visibleStages" :key="stage.key" class="sync-stage" :class="{ active: index === currentIndex, done: index < currentIndex }">
           <span>{{ index < currentIndex ? "✓" : index + 1 }}</span>{{ stage.label }}
         </div>
       </div>
+      <div v-if="app.sync.localOnly && app.sync.stage === 'done'" class="sync-local-tip">未配置 WebDAV，本次仅展示本机（本地）数据，未发起远程同步</div>
       <div class="sync-log-head"><h3>同步日志</h3><span>{{ logs.length }} 条</span></div>
       <div class="sync-dialog-logs">
         <div v-for="log in logs.slice(0, 40)" :key="log.id" class="sync-dialog-log" :class="log.level">

@@ -2,7 +2,7 @@
 import { onMounted, ref, watch, computed } from "vue";
 import { useAppStore } from "../stores/app";
 import { useUsageStore } from "../stores/usage";
-import { formatNumber } from "../composables/useFormat";
+import { formatToken } from "../composables/useFormat";
 import TrendChart from "../components/TrendChart.vue";
 import Heatmap from "../components/Heatmap.vue";
 import UsageBreakdown from "../components/UsageBreakdown.vue";
@@ -47,7 +47,8 @@ watch(
 );
 
 const activeSourceName = computed(() => app.sourceName(app.activeSource));
-const activeSourceEnabled = computed(() => app.isSourceEnabled(app.activeSource));
+// 「全部」时任一可见源启用即可看；单源时看该源启用态（统一在 store 判断）
+const activeSourceEnabled = computed(() => app.activeSourceEnabled);
 
 const selectedDev = computed(() => usage.selectedDevice);
 const isFiltered = computed(() => usage.isFiltered);
@@ -127,23 +128,23 @@ function showSettings() {
         <div class="top-kpis-grid">
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>总计消耗Token</div>
-            <div class="k-value mono">{{ formatNumber(anim.total || 0, 1) }}</div>
+            <div class="k-value mono">{{ formatToken(anim.total || 0) }}</div>
             <div class="k-foot">{{ isFiltered ? ((selectedDev?.deviceName || '设备') + ' 累计消耗') : '全部设备累计' }}</div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>今日消耗Token</div>
-            <div class="k-value mono">{{ formatNumber(anim.today || 0, 1) }}</div>
+            <div class="k-value mono">{{ formatToken(anim.today || 0) }}</div>
             <div class="k-foot">{{ isFiltered ? '该设备今日消耗' : '今日 0 点起累计' }}</div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>总计缓存命中率</div>
             <div class="k-value mono">{{ (anim.hit || 0).toFixed(1) }}<span class="unit">%</span></div>
-            <div class="k-foot">命中 {{ formatNumber(usage.summary?.cacheReadTokens || 0, 1) }} / 输入 {{ formatNumber(usage.summary?.inputTokens || 0, 1) }}</div>
+            <div class="k-foot">命中 {{ formatToken(usage.summary?.cacheReadTokens || 0) }} / 输入 {{ formatToken(usage.summary?.inputTokens || 0) }}</div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>今日缓存命中率</div>
             <div class="k-value mono">{{ todayHitPct.toFixed(1) }}<span class="unit">%</span></div>
-            <div class="k-foot">今日命中 {{ formatNumber(usage.summary?.todayCacheReadTokens || 0, 1) }} / 输入 {{ formatNumber(usage.summary?.todayInputTokens || 0, 1) }}</div>
+            <div class="k-foot">今日命中 {{ formatToken(usage.summary?.todayCacheReadTokens || 0) }} / 输入 {{ formatToken(usage.summary?.todayInputTokens || 0) }}</div>
           </div>
           <div class="kpi"><i class="k-line-glow"></i>
             <div class="k-label"><span class="kdot"></span>总计调用次数</div>

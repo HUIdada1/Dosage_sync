@@ -43,6 +43,10 @@ const ALLOWED_COMMANDS = new Set([
   // 其它
   "open_data_dir",
   "get_data_dir",
+  "get_data_dir_info",
+  "browse_data_dir",
+  "set_data_dir",
+  "reset_data_dir",
   "get_app_version",
   "get_is_portable",
   "reset_local_cache",

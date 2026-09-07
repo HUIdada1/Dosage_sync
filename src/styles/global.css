@@ -430,9 +430,38 @@ button {
   transition: background-color .3s ease, border-color .3s ease;
 }
 
+.source-tabs-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+/* 「全部」与滚动盒之间的细分隔线 */
+.tabs-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 6px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+/* 分类按钮横向滚动盒：按钮过多时可左右滑动，避免挤压右侧同步区 */
 .source-tabs {
   display: flex;
   gap: 4px;
+  overflow-x: auto;
+  min-width: 0;
+  scrollbar-width: none;
+}
+
+.source-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.source-tab-all {
+  flex-shrink: 0;
 }
 
 .source-tab {
@@ -443,6 +472,8 @@ button {
   border-radius: 9px;
   font-size: 13px;
   color: var(--text-3);
+  flex-shrink: 0;
+  white-space: nowrap;
   cursor: pointer;
   user-select: none;
   font-weight: 500;
@@ -473,6 +504,14 @@ button {
 
 .appbar .spacer {
   flex: 1;
+  min-width: 8px;
+}
+
+/* 右侧同步区不参与收缩，按钮多时由左侧滚动盒让位 */
+.appbar .sync-state,
+.appbar .icon-btn,
+.appbar .btn-sync {
+  flex-shrink: 0;
 }
 
 .appbar .sync-state {
@@ -1346,7 +1385,7 @@ button {
 .heat-main {
   display: inline-flex;
   flex-direction: column;
-  padding-top: 2px;
+  padding: 2px 6px 0;
 }
 
 .heat-months {
@@ -1782,6 +1821,16 @@ button {
   font-size: 11px;
 }
 
+.sync-local-tip {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface-3);
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 /* ===== 筛选 ===== */
 .filters {
   display: flex;
@@ -2043,6 +2092,24 @@ button {
   margin-top: 2px;
 }
 
+/* 设置页「数据缓存目录」编辑区 */
+.data-dir-edit {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.data-dir-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.data-dir-edit .f-input {
+  max-width: 560px;
+}
+
 .source-actions {
   display: flex;
   align-items: center;
@@ -2083,6 +2150,123 @@ button {
 
 .switch.on::after {
   transform: translateX(18px);
+}
+
+/* ===== 工具栏切换项自定义（显隐 + 排序） ===== */
+.setting-group .sg-hint {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+.visibility-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.visibility-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  transition: background .15s ease, border-color .15s ease, opacity .15s ease;
+  cursor: grab;
+}
+
+.visibility-item:hover {
+  border-color: var(--accent-soft-2);
+}
+
+.visibility-item.dragging {
+  opacity: .45;
+  cursor: grabbing;
+}
+
+.visibility-item.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.visibility-item.hidden {
+  opacity: .55;
+}
+
+.visibility-item .drag-handle {
+  display: flex;
+  align-items: center;
+  color: var(--text-3);
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.visibility-item .drag-handle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.visibility-item .v-title {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.visibility-item .v-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.visibility-item.hidden .v-name {
+  color: var(--text-3);
+}
+
+.visibility-item .v-sub {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.visibility-item .v-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.icon-btn-sm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.icon-btn-sm:hover:not(:disabled) {
+  color: var(--accent-strong);
+  border-color: var(--accent-soft-2);
+  background: var(--accent-soft);
+}
+
+.icon-btn-sm:disabled {
+  opacity: .3;
+  cursor: not-allowed;
+}
+
+.icon-btn-sm svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* ===== 空状态 ===== */

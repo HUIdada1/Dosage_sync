@@ -37,6 +37,7 @@ let state = {
   percent: 0,
   message: "",
   lastSyncAt: null,
+  localOnly: false,
 };
 
 // 同步结束/失败回调（由 main.cjs 注入，用于发系统通知）
@@ -54,7 +55,7 @@ function log(kind, level, message, detail) {
   db.addLog(kind, level, message, detail || "");
 }
 
-/** 确保本机 deviceId 存在：按 zcode → codex → dsh 回退，否则生成 UUID */
+/** 确保本机 deviceId 存在：按适配器注册表顺序（zcode → codex → dsh → workbuddy → reasonix）探测回退，否则生成 UUID */
 function ensureLocalDeviceId(cfg = null) {
   let id = db.getLocalDeviceId();
   if (id) return id;
@@ -117,9 +118,16 @@ function enabledSourceIds(cfg) {
   return adapter.sources.filter((src) => sourceEnabled(cfg, src.id)).map((src) => src.id);
 }
 
+/** 判断 WebDAV 是否已完整配置（endpoint 非空且非纯空白），否则视为本地模式 */
 function webdavReady(cfg) {
-  return !!(cfg.webdav && cfg.webdav.endpoint);
+  const wd = cfg && cfg.webdav;
+  if (!wd || typeof wd !== "object") return false;
+  const endpoint = typeof wd.endpoint === "string" ? wd.endpoint.trim() : "";
+  return endpoint.length > 0;
 }
+
+/** 当前同步轮次的取消控制器：cancel() 时中断在途网络请求 */
+let currentAbort = null;
 
 async function ensureRoots(wd) {
   await webdav.ensureDir(webdav.joinUrl(wd.endpoint, wd.root, `${DEVICES_DIR}`), wd);
@@ -128,7 +136,9 @@ async function ensureRoots(wd) {
 
 async function run(cfg) {
   if (state.running) throw new Error("同步正在进行中");
-  state = { running: true, cancelled: false, stage: "extract", percent: 0, message: "准备抽取", lastSyncAt: state.lastSyncAt || null };
+  state = { running: true, cancelled: false, stage: "extract", percent: 0, message: "准备抽取", lastSyncAt: state.lastSyncAt || null, localOnly: false };
+  currentAbort = new AbortController();
+  webdav.setActiveSignal(currentAbort.signal);
 
   try {
     const deviceId = ensureLocalDeviceId(cfg);
@@ -136,11 +146,20 @@ async function run(cfg) {
     const activeSources = enabledSourceIds(cfg);
     const deviceSources = activeSources.join(",");
 
+    // 本地模式：未配置 WebDAV 时仅做本机抽取与合并，跳过全部远程请求，避免因等待远端响应阻塞
+    const localOnly = !webdavReady(cfg);
+    if (localOnly) {
+      emit({ localOnly: true });
+      log("extract", "info", "未配置 WebDAV 存储，本次仅同步本机（本地）数据，跳过远程上传/拉取");
+    }
+
     // 1. 抽取
     emit({ stage: "extract", percent: 5, message: "正在抽取本地用量…" });
     log("extract", "info", "开始获取本地数据");
     if (activeSources.length === 0) log("extract", "info", "没有启用的数据源，跳过抽取");
     for (let sourceIndex = 0; sourceIndex < activeSources.length; sourceIndex++) {
+      // 逐源检查取消：上传/拉取循环均有同等检查，多源抽取耗时不应例外
+      if (state.cancelled) return finish("cancelled");
       const sourceId = activeSources[sourceIndex];
       const src = adapter.byId(sourceId);
       const sourceCfg = (cfg.sources || []).find((item) => item.source === sourceId);
@@ -164,9 +183,12 @@ async function run(cfg) {
           db.insertRecords(records);
           // 适配器可选的落库后回调（Antigravity 快照在记录确认入库后才推进，失败不丢消耗）
           if (typeof records.onInserted === "function") records.onInserted();
-          // 锚点单调不回退：回扫窗口内无新记录时保持原锚点，避免每次倒退 24h
+          // 锚点单调不回退：回扫窗口内无新记录时保持原锚点，避免每次倒退 24h。
+          // 防御非有限时间戳（NaN/Infinity 会污染锚点：NaN 会让 anchor>0 恒假 → 每次全量重扫）
           let maxTs = anchor;
-          for (const r of records) maxTs = Math.max(maxTs, r.startedAt);
+          for (const r of records) {
+            if (r && Number.isFinite(r.startedAt)) maxTs = Math.max(maxTs, r.startedAt);
+          }
           db.setAnchor(sourceId, maxTs);
           log("extract", "info", `${src.name} 获取完成：${records.length} 条记录（since=${sinceMs}）`);
         }
@@ -333,11 +355,15 @@ async function run(cfg) {
         const recs = decodeShard(buf, p.name);
         // 数据校验：过滤字段缺失、时间戳异常的无效数据（NOT NULL 字段必须齐备）
         const validRecs = recs.filter(
-          (r) => r && typeof r.id === "string" && typeof r.deviceId === "string"
+          (r) => r && typeof r.id === "string" && r.id && typeof r.deviceId === "string"
             && typeof r.deviceName === "string" && typeof r.source === "string" && r.source
             && typeof r.providerId === "string" && typeof r.modelId === "string"
-            && typeof r.startedAt === "number" && !isNaN(r.startedAt)
+            && Number.isFinite(r.startedAt) && r.startedAt > 0
         );
+        // 远端分片含畸形行时给出可见提示（不阻断合并）
+        if (recs.length > validRecs.length) {
+          log("download", "warn", `分片 ${p.other}/${p.name} 跳过 ${recs.length - validRecs.length} 条字段缺失或时间戳异常的记录`);
+        }
         if (validRecs.length > 0) {
           db.insertRecords(validRecs);
           // 增量拉取记账：hash 与远端 manifest 对齐，下次相同内容直接跳过。
@@ -387,12 +413,19 @@ async function run(cfg) {
 
     return finish("completed");
   } catch (e) {
-    log("error", "error", "同步失败", e.message);
+    // 取消触发的网络中断按取消收尾，不当作同步失败
+    if (state.cancelled) return finish("cancelled");
+    // 仅网络层异常做分类提示；HTTP 状态错误/DB/磁盘等业务错误保留原始 message，避免误导
+    const msg = webdav.isNetworkError(e) ? webdav.describeFailure("同步", e) : e.message;
+    log("error", "error", "同步失败", msg);
     state.running = false;
     state.stage = "error";
-    state.message = e.message;
-    if (onFinish) onFinish(false, e.message);
-    return { ok: false, error: e.message };
+    state.message = msg;
+    if (onFinish) onFinish(false, msg);
+    return { ok: false, error: msg };
+  } finally {
+    webdav.setActiveSignal(null);
+    currentAbort = null;
   }
 }
 
@@ -401,11 +434,11 @@ function finish(result) {
   if (result === "completed") {
     state.stage = "done";
     state.percent = 100;
-    state.message = "同步完成";
+    state.message = state.localOnly ? "同步完成（仅本机数据）" : "同步完成";
     state.lastSyncAt = Date.now();
-    log("done", "ok", "同步完成");
+    log("done", "ok", state.localOnly ? "同步完成（仅本机数据，未配置 WebDAV）" : "同步完成");
     try { db.pruneLogs(); } catch { /* 日志裁剪失败不影响同步 */ }
-    if (onFinish) onFinish(true, "同步完成");
+    if (onFinish) onFinish(true, state.localOnly ? "同步完成（仅本机数据）" : "同步完成");
     return { ok: true };
   }
   state.stage = "cancelled";
@@ -416,6 +449,7 @@ function finish(result) {
 
 function cancel() {
   state.cancelled = true;
+  if (currentAbort) currentAbort.abort(); // 立即中断在途网络请求
   emit({ message: "正在取消…" });
 }
 
@@ -430,6 +464,7 @@ function progress() {
     percent: state.percent,
     message: state.message,
     lastSyncAt: state.lastSyncAt,
+    localOnly: !!state.localOnly,
   };
 }
 

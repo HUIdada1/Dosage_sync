@@ -53,6 +53,10 @@ const modelNames = computed(() =>
     .filter((model) => completeData.value.some((d) => Number(d.models?.[model] || 0) > 0))
 );
 
+// 图表切换：汇总（仅总量曲线，图例干净）/ 按模型（各模型分色曲线）
+const view = ref<"total" | "models">("total");
+const showLegend = computed(() => view.value === "models" && modelNames.value.length > 0);
+
 function render() {
   if (!chart || !el.value) return;
   const css = getComputedStyle(document.documentElement);
@@ -67,7 +71,7 @@ function render() {
     animationDurationUpdate: 450,
     animationEasing: "cubicOut",
     animationEasingUpdate: "cubicInOut",
-    grid: { left: 56, right: 24, top: modelNames.value.length ? 48 : 20, bottom: 28 },
+    grid: { left: 60, right: 28, top: showLegend.value ? 58 : 26, bottom: 32 },
     tooltip: {
       trigger: "axis",
       backgroundColor: css.getPropertyValue("--surface").trim(),
@@ -100,39 +104,43 @@ function render() {
       },
       splitLine: { lineStyle: { color: gridColor } },
     },
-    series: [
-      {
-        name: "总量",
-        type: "line",
-        data: dataset.map((d) => d.total),
-        smooth: true,
-        symbol: "none",
-        lineStyle: { width: 2.2, color: accent, shadowColor: accent, shadowBlur: 8, shadowOffsetY: 3 },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: accent + "4d" },
-            { offset: 1, color: accent + "00" },
-          ]),
-        },
-      },
-      ...modelNames.value.map((model, i) => ({
-        name: model,
-        type: "line",
-        data: dataset.map((d) => d.models?.[model] || 0),
-        smooth: true,
-        symbol: "none",
-        lineStyle: { width: 1.8, color: palette[i % palette.length] },
-      })),
-    ],
+    series:
+      view.value === "total"
+        ? [
+            {
+              name: "总量",
+              type: "line",
+              data: dataset.map((d) => d.total),
+              smooth: true,
+              symbol: "none",
+              lineStyle: { width: 2.2, color: accent, shadowColor: accent, shadowBlur: 8, shadowOffsetY: 3 },
+              areaStyle: {
+                color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                  { offset: 0, color: accent + "4d" },
+                  { offset: 1, color: accent + "00" },
+                ]),
+              },
+            },
+          ]
+        : modelNames.value.map((model, i) => ({
+            name: model,
+            type: "line",
+            data: dataset.map((d) => d.models?.[model] || 0),
+            smooth: true,
+            symbol: "none",
+            lineStyle: { width: 1.8, color: palette[i % palette.length] },
+          })),
     legend: {
-      top: 4,
-      left: 56,
-      right: 24,
+      show: showLegend.value,
+      top: 12,
+      left: 60,
+      right: 28,
       type: "scroll",
       icon: "roundRect",
-      itemWidth: 11,
-      itemHeight: 11,
-      itemGap: 14,
+      itemWidth: 10,
+      itemHeight: 10,
+      itemGap: 16,
+      pageIconSize: 10,
       textStyle: { color: textColor, fontSize: 11 },
     },
   });
@@ -169,6 +177,7 @@ onBeforeUnmount(() => {
 watch(() => completeData.value, () => nextTick(render), { deep: true });
 watch(() => props.range, () => nextTick(render));
 watch(() => app.isDark, () => nextTick(render));
+watch(view, () => nextTick(render));
 </script>
 
 <template>
@@ -178,12 +187,22 @@ watch(() => app.isDark, () => nextTick(render));
       <span class="hint">每日累计 token</span>
       <div class="right">
         <div class="tabs">
+          <button class="tab" :class="{ active: view === 'total' }" @click="view = 'total'">汇总</button>
+          <button class="tab" :class="{ active: view === 'models' }" @click="view = 'models'">按模型</button>
+        </div>
+        <div class="tabs">
           <button v-for="r in ranges" :key="r.key" class="tab" :class="{ active: range === r.key }" @click="emit('change-range', r.key)">
             {{ r.label }}
           </button>
         </div>
       </div>
     </div>
-    <div class="chart-wrap"><div ref="el" class="chart"></div></div>
+    <div class="chart-wrap"><div ref="el" class="chart trend-chart"></div></div>
   </div>
 </template>
+
+<style scoped>
+.trend-chart {
+  height: 320px;
+}
+</style>

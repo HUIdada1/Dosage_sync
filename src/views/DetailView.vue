@@ -51,27 +51,31 @@ function rangeToMs() {
 /** 当前筛选 → 导出条件（与列表查询同一套语义） */
 function exportFilter() {
   const { from, to } = rangeToMs();
-  return { from, to, deviceId: filter.device, source: app.activeSource, model: filter.model, provider: filter.provider, status: filter.status };
+  return { from, to, deviceId: filter.device, source: app.querySource, model: filter.model, provider: filter.provider, status: filter.status };
 }
 
 async function load() {
   const { from, to } = rangeToMs();
   await usage.loadRecords({
     from, to,
-    deviceId: filter.device, source: app.activeSource,
+    deviceId: filter.device, source: app.querySource,
     model: filter.model, provider: filter.provider, status: filter.status,
     limit: pageSize, offset: page.value * pageSize,
   });
 }
 
 async function loadOptions() {
-  // 模型 / 供应商下拉从真实数据动态生成，避免硬编码漏项
-  const [models, providers] = await Promise.all([
-    api.getAggregate(app.totalMode, "model", null, null, app.activeSource),
-    api.getAggregate(app.totalMode, "provider", null, null, app.activeSource),
-  ]);
-  modelOptions.value = models.map((m) => m.key);
-  providerOptions.value = providers.map((p) => p.key);
+  // 模型 / 供应商下拉从真实数据动态生成，避免硬编码漏项；失败保留旧选项
+  try {
+    const [models, providers] = await Promise.all([
+      api.getAggregate(app.totalMode, "model", null, null, app.querySource),
+      api.getAggregate(app.totalMode, "provider", null, null, app.querySource),
+    ]);
+    modelOptions.value = models.map((m) => m.key);
+    providerOptions.value = providers.map((p) => p.key);
+  } catch {
+    /* 下拉选项加载失败不阻断列表使用 */
+  }
 }
 
 onMounted(() => {
@@ -121,11 +125,15 @@ function pickFrom(e: Event) { filter.from = (e.target as HTMLInputElement).value
 function pickTo(e: Event) { filter.to = (e.target as HTMLInputElement).value || ""; page.value = 0; load(); }
 
 async function doExport(fmt: "csv" | "json") {
-  const r = await api.exportData(fmt, exportFilter());
-  exportMsg.value = {
-    ok: !!r?.ok,
-    text: r?.ok ? `导出成功：${r.path}` : r?.message || "导出失败",
-  };
+  try {
+    const r = await api.exportData(fmt, exportFilter());
+    exportMsg.value = {
+      ok: !!r?.ok,
+      text: r?.ok ? `${r.message || "导出成功"}：${r.path}` : r?.message || "导出失败",
+    };
+  } catch (e) {
+    exportMsg.value = { ok: false, text: `导出失败：${e instanceof Error ? e.message : "未知错误"}` };
+  }
   window.clearTimeout(exportMsgTimer);
   exportMsgTimer = window.setTimeout(() => { exportMsg.value = null; }, 6000);
 }
@@ -186,7 +194,8 @@ const totalPages = () => Math.max(1, Math.ceil(usage.recordsTotal / pageSize));
           <select class="f-select" :value="filter.status || ''" @change="pickStatus"><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option><option value="cancelled">已取消</option></select>
         </div>
         <div style="flex: 1"></div>
-        <span v-if="exportMsg" :style="{ fontSize: '12px', color: exportMsg.ok ? 'var(--ok)' : 'var(--err)', maxWidth: '320px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }" :title="exportMsg.text">{{ exportMsg.text }}</span>
+        <span v-if="usage.recordsError" style="font-size: 12px; color: var(--err)">{{ usage.recordsError }}</span>
+        <span v-else-if="exportMsg" :style="{ fontSize: '12px', color: exportMsg.ok ? 'var(--ok)' : 'var(--err)', maxWidth: '320px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }" :title="exportMsg.text">{{ exportMsg.text }}</span>
         <button class="btn-outline" @click="doExport('csv')">导出 CSV</button>
         <button class="btn-outline" @click="doExport('json')">导出 JSON</button>
       </div>

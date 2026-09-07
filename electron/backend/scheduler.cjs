@@ -33,6 +33,8 @@ function shouldRun(cfg) {
   // 每小时
   if (cfg.schedule.hourly) {
     const interval = Math.max(1, cfg.schedule.hourlyInterval || 1);
+    // 系统时间回拨（NTP 校正/手动调慢）时重置基准，避免差值虚大导致立即误触发
+    if (now < lastHourlyAt) lastHourlyAt = now;
     if (now - lastHourlyAt >= interval * 60 * 60 * 1000) {
       lastHourlyAt = now;
       rememberLast("hourly", now);
@@ -66,8 +68,12 @@ function getConfig() {
 function tick() {
   try {
     if (paused) return;
+    // 同步进行中先跳过：shouldRun 一旦命中就会推进记账，先调它会把这次
+    // daily/hourly 触发静默丢弃（daily 当天不再补跑）。先挡 running，让命中
+    // 条件在下一 tick 依然成立，同步结束后自然补跑。
+    if (sync.progress().running) return;
     const cfg = getConfig();
-    if (shouldRun(cfg) && !sync.progress().running) {
+    if (shouldRun(cfg)) {
       sync.run(cfg).catch(() => {});
     }
   } catch {

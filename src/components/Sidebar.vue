@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";import { useAppStore } from "../stores/app";
 import { useUsageStore } from "../stores/usage";
-import { formatNumber, timeAgo } from "../composables/useFormat";
+import { formatToken, timeAgo } from "../composables/useFormat";
 import * as api from "../api/ipc";
 import type { DeviceMeta } from "../types";
 import logoUrl from "../assets/logo.png";
@@ -94,7 +94,7 @@ async function removeDevice(d: DeviceMeta) {
         <div class="dname">全部电脑 <span class="tag tag-all">汇总</span></div>
         <div class="dmeta">{{ devices.length }} 台设备合计</div>
       </div>
-      <div class="dnum"><b class="mono">{{ formatNumber(allTotalTokens) }}</b></div>
+      <div class="dnum"><b class="mono">{{ formatToken(allTotalTokens) }}</b></div>
     </div>
 
     <!-- 各个设备选项 -->
@@ -115,7 +115,7 @@ async function removeDevice(d: DeviceMeta) {
         <div class="dname">{{ d.deviceName }} <span v-if="d.isLocal" class="tag">本机</span></div>
         <div class="dmeta">{{ timeAgo(d.lastSyncAt) }}</div>
       </div>
-      <div class="dnum"><b class="mono">{{ formatNumber(d.totalTokens) }}</b></div>
+      <div class="dnum"><b class="mono">{{ formatToken(d.totalTokens) }}</b></div>
       <button
         v-if="!d.isLocal"
         class="dev-del"

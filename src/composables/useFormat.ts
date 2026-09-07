@@ -10,6 +10,23 @@ export function formatNumber(n: number, digits = 1): string {
   return Math.round(n).toString();
 }
 
+/**
+ * token 数值单位换算（设备栏 + 总览统一口径）：
+ * - 数值 < 100,000,000（1e8）时显示原始数值（千分位逗号）；
+ * - 达到 1e8 后换算为 M 单位（除以 1e6）显示，整数部分千分位逗号，默认保留 2 位小数。
+ */
+export function formatToken(n: number, digits = 2): string {
+  if (!isFinite(n)) return "0";
+  const abs = Math.abs(n);
+  if (abs >= 1e8) {
+    return (n / 1e6).toLocaleString("en-US", {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }) + "M";
+  }
+  return Math.round(n).toLocaleString("en-US");
+}
+
 /** 完整千分位 */
 export function formatInteger(n: number): string {
   return Math.round(n).toLocaleString("en-US");

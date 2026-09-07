@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { useAppStore } from "../stores/app";
+import { useAppStore, ALL_SOURCES } from "../stores/app";
 
 const app = useAppStore();
 
@@ -13,17 +13,29 @@ const lastSyncLabel = computed(() => {
 
 <template>
   <header class="appbar">
-    <div class="source-tabs">
+    <div class="source-tabs-wrap">
+      <!-- 「全部」固定在横向滚动盒之外，按钮再多也始终可见 -->
       <button
-        v-for="s in app.sources"
-        :key="s.id"
-        class="source-tab"
-        :class="{ active: app.activeSource === s.id }"
-        @click="app.setActiveSource(s.id)"
+        class="source-tab source-tab-all"
+        :class="{ active: app.activeSource === ALL_SOURCES }"
+        @click="app.setActiveSource(ALL_SOURCES)"
       >
-        <span class="dot" v-if="app.isSourceEnabled(s.id)"></span>
-        {{ s.name }}
+        <span class="dot" v-if="app.anyVisibleSourceEnabled"></span>
+        全部
       </button>
+      <span class="tabs-divider"></span>
+      <div class="source-tabs">
+        <button
+          v-for="s in app.visibleSources"
+          :key="s.id"
+          class="source-tab"
+          :class="{ active: app.activeSource === s.id }"
+          @click="app.setActiveSource(s.id)"
+        >
+          <span class="dot" v-if="app.isSourceEnabled(s.id)"></span>
+          {{ s.name }}
+        </button>
+      </div>
     </div>
     <div class="spacer"></div>
     <div class="sync-state">
