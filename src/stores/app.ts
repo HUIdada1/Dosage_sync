@@ -25,9 +25,10 @@ const defaultConfig: AppConfig = {
     { source: "trae-cn", enabled: false, dataDir: null },
     { source: "trae-solo-cn", enabled: false, dataDir: null },
     { source: "opensquilla", enabled: false, dataDir: null },
+    { source: "grok", enabled: false, dataDir: null },
   ],
   sourceVisibility: {
-    order: ["zcode", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "trae", "trae-cn", "trae-solo-cn", "opensquilla"],
+    order: ["zcode", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "trae", "trae-cn", "trae-solo-cn", "opensquilla", "grok"],
     hidden: [],
     initialized: false,
   },
