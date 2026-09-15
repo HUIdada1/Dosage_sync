@@ -1,8 +1,8 @@
 # 用量同步（Dosage Sync）
 
-一个 Windows 托盘常驻工具：自动读取本机 ZCode、Codex、DeepSeek Harness、WorkBuddy、WorkBuddy AI、Reasonix、CodeBuddy、Qoder、Qoder CN、Antigravity、Antigravity IDE、Trae、Trae CN、TRAE SOLO CN、OpenSquilla 与 Grok 的模型用量，按「电脑」为单元同步到自建 WebDAV，并在多台电脑之间汇总展示。
+一个 Windows 托盘常驻工具：自动读取本机 ZCode、Codex、DeepSeek Harness、WorkBuddy、WorkBuddy AI、Reasonix、CodeBuddy、Qoder、Qoder CN、Antigravity、Antigravity IDE、Trae、Trae CN、TRAE SOLO、TRAE SOLO CN、OpenSquilla 与 Grok 的模型用量，按「电脑」为单元同步到自建 WebDAV，并在多台电脑之间汇总展示。
 
-- **多数据源已接入**：支持 ZCode、Codex、DeepSeek Harness（DSH）、WorkBuddy、WorkBuddy AI、Reasonix、CodeBuddy、Qoder、Qoder CN、Antigravity、Antigravity IDE、Trae、Trae CN、TRAE SOLO CN、OpenSquilla、Grok 共 16 个数据源，各源可独立启用、探测、同步和筛选。
+- **多数据源已接入**：支持 ZCode、Codex、DeepSeek Harness（DSH）、WorkBuddy、WorkBuddy AI、Reasonix、CodeBuddy、Qoder、Qoder CN、Antigravity、Antigravity IDE、Trae、Trae CN、TRAE SOLO、TRAE SOLO CN、OpenSquilla、Grok 共 17 个数据源，各源可独立启用、探测、同步和筛选。
 - **存储后端可扩展**：当前优先支持自建飞牛 fnOS 的 WebDAV，后续可增加 Nextcloud / 坚果云 / 群晖 / 自定义。
 - **本机存储（2026-09 新增）**：没有 WebDAV 也有数据安全网——设置页「数据存储」可切换「WebDAV 存储 / 本机存储」；本机存储把整库快照（汇总库 + 设置）打包为标准 zip 备份压缩包（默认存到数据缓存目录，可自定义，固定名覆盖式）。未配置 WebDAV 时顶栏「立即备份」与定时同步都会自动重新生成压缩包；支持「从压缩包恢复」整包还原数据与设置（恢复前自动留安全副本，失败自动回滚），详见 [本机存储备份方案](docs/本机存储备份方案-2026-09-10.md)。
 - **聚合灵活**：累计 token 可按软件源、设备、模型和供应商隔离查询，支持多模型多类型。
@@ -66,6 +66,7 @@
 │       ├── adapter-trae.cjs # Trae 适配器（读 %APPDATA%/Trae）
 │       ├── adapter-trae-cn.cjs # Trae CN 适配器（读 %APPDATA%/Trae CN）
 │       ├── adapter-trae-solo-cn.cjs # TRAE SOLO CN 适配器（读 %APPDATA%/TRAE SOLO CN）
+│       ├── adapter-trae-solo.cjs # TRAE SOLO 适配器（读 %APPDATA%/TRAE SOLO）
 │       ├── adapter-opensquilla.cjs # OpenSquilla 适配器（读 %APPDATA%/@opensquilla state/sessions.db usage_events）
 │       ├── adapter-grok.cjs # Grok 适配器（读 ~/.grok/sessions/**/usage.json 会话账本，turn × 模型粒度五桶）
 │       ├── webdav.cjs      # WebDAV 客户端（原生 fetch）
@@ -97,11 +98,12 @@
 | Antigravity IDE（新版） | `~/.gemini/antigravity-ide` | 同 Antigravity（目录同构） | 停用 |
 | Trae（国际版） | `%APPDATA%/Trae` | SQLCipher 库 `chat_turn.context` 的 `token_usage` 五桶（turn 累计口径） | 停用 |
 | Trae CN（国内版） | `%APPDATA%/Trae CN` | 同 Trae（解密同密钥） | 停用 |
+| TRAE SOLO | `%APPDATA%/TRAE SOLO` | 同 Trae（解密同密钥） | 停用 |
 | TRAE SOLO CN | `%APPDATA%/TRAE SOLO CN` | 同 Trae（解密同密钥） | 停用 |
 | OpenSquilla | `%APPDATA%/@opensquilla/desktop-electron/opensquilla` | `state/sessions.db` 的 `usage_events` 五桶（明文 SQLite，逐次 LLM 调用） | 停用 |
 | Grok | `~/.grok` | `sessions/**/usage.json` 会话账本五桶（turn × 模型粒度，含 fork 多模型分账） | 停用 |
 
-Codex、DSH、CodeBuddy、Qoder 两源、两个 Antigravity 源、三个 Trae 源、OpenSquilla 与 Grok 需要在设置页手动启用（首次启动探测到数据会自动显示并启用）。十六个来源共用本机设备 ID，记录依靠 `source` 隔离；切换顶部数据源后，总览、设备、趋势、热力图与明细会同步切换统计范围，各源统计互不影响。WorkBuddy 与 WorkBuddy AI 是同一厂商的两个产品，目录与记录 id 前缀各自独立（`:workbuddy:` / `:workbuddy-ai:`），互不合并。Trae / Trae CN / TRAE SOLO CN 的本地会话库为 SQLCipher 整库加密，应用内置密钥与 sqlcipher.dll 解密读取（密钥为 Trae 应用硬编码固定值，三应用通用；目标机器无需安装额外软件），详见 [Trae数据源接入方案](docs/Trae数据源接入方案-2026-09-11.md)。OpenSquilla 的用量账本为明文 SQLite，详见 [OpenSquilla数据源接入方案](docs/OpenSquilla数据源接入方案-2026-09-14.md)。Grok 的用量账本为 Grok CLI 落盘的会话级 JSON usage.json，详见 [Grok数据源接入方案](docs/Grok数据源接入方案-2026-09-14.md)。
+Codex、DSH、CodeBuddy、Qoder 两源、两个 Antigravity 源、四个 Trae 源、OpenSquilla 与 Grok 需要在设置页手动启用（首次启动探测到数据会自动显示并启用）。十七个来源共用本机设备 ID，记录依靠 `source` 隔离；切换顶部数据源后，总览、设备、趋势、热力图与明细会同步切换统计范围，各源统计互不影响。WorkBuddy 与 WorkBuddy AI 是同一厂商的两个产品，目录与记录 id 前缀各自独立（`:workbuddy:` / `:workbuddy-ai:`），互不合并。Trae / Trae CN / TRAE SOLO / TRAE SOLO CN 的本地会话库为 SQLCipher 整库加密，应用内置密钥与 sqlcipher.dll 解密读取（密钥为 Trae 应用硬编码固定值，四应用通用；目标机器无需安装额外软件），详见 [Trae数据源接入方案](docs/Trae数据源接入方案-2026-09-11.md)。OpenSquilla 的用量账本为明文 SQLite，详见 [OpenSquilla数据源接入方案](docs/OpenSquilla数据源接入方案-2026-09-14.md)。Grok 的用量账本为 Grok CLI 落盘的会话级 JSON usage.json，详见 [Grok数据源接入方案](docs/Grok数据源接入方案-2026-09-14.md)。
 
 > **Token 口径说明（已实测确认）**：各 token 源的「输入」均包含缓存命中——ZCode 为源数据原生口径，DSH 由适配器归一化补入，Codex 已用本机 rollout 原始数据实测确认（OpenAI 语义中 `cached_input_tokens` 是 `input_tokens` 的子集），WorkBuddy 与 WorkBuddy AI 会话转录实测同口径。因此缓存命中率 = 缓存命中 / 输入在跨源对比时口径一致，命中率恒 ≤ 100%。WorkBuddy / WorkBuddy AI 的推理与缓存写入 token 从其原始回包（`providerData.rawUsage`）补入，源数据缺失时记 0；转录中的对话内容不会被读取或上传。WorkBuddy AI 的 `rawUsage.credit` 额度点**不写入 `credits` 列**——该列在汇总 SQL 中被直接计入 token 总量（为 Qoder「仅有 credits、token 全 0」设计），WorkBuddy AI 的 token 与 credit 并存，写入会造成同一笔调用双重计量。
 
@@ -117,7 +119,7 @@ Codex、DSH、CodeBuddy、Qoder 两源、两个 Antigravity 源、三个 Trae �
 
 > **Antigravity 系统计口径说明**：读取 `~/.gemini/antigravity(-ide)/conversations/*.db`（每会话一个明文 SQLite）中 `gen_metadata` 表的逐次生成记录（protobuf：`f4` 用量子消息含 `f2` credits 额度点 / `f3` 输出 token / `f5` 输入提示词水位 / `f9` ≈思考 token，`f19` 模型名）。官方模型服务端按 credits 计费——**credits 写入 `usage_record.credits` 独立列并计入总量聚合但不进 token 总量**（与 Qoder 同构），明细页看「额度」列；输出 token（f3）为精确值，输入 token 为 f5 水位在会话内的相邻差分（首行从 0 起算），属近似口径；本地无缓存明细，cache 两桶为 0。幂等键 = `设备ID:源:conversationId:genIdx`（conversationId 取 .db 文件名 UUID），会话库无逐次时间戳，`startedAt` 取文件 mtime。本地 `.pb` 旧格式会话（2026-05~07）为整文件加密无法解析，统计起点为现存 `.db` 最早记录。无需 Antigravity 正在运行；单库损坏/被占用复制临时副本回退，解析失败优雅跳过并写日志，不影响其他源。2026-09-05 初版曾按 state.vscdb 配额快照差值计量（配额百分比点非 token），2026-09-11 发现转录库后整体替换，历史方案见 [方案.md](docs/方案.md) 2.9.1。
 
-> **Trae 系统计口径说明**：读取 `%APPDATA%/<应用>/ModularData/ai-agent/database.db`（SQLCipher 整库加密，应用内置硬编码密钥解密）中 `chat_turn` 表的 `context` JSON 内 `token_usage` 五桶（`prompt_tokens` 含缓存命中，与其余源同口径）。注意 `token_usage` 为每 turn 的**累计值**——同一 session 后续 turn 会把前文上下文重复计入 prompt，统计天然偏大，这是 Trae 客户端计量方式；模型名本地不落盘（`token_usage.name` 为空），一期统一归因源名（trae / trae-cn / trae-solo-cn）；`created_at` 为秒级时间戳；幂等键为 `turn_id`。解密实现：koffi FFI + 内置 `resources/sqlcipher/`（sqlcipher.dll + libcrypto/libssl 三件套），读取时先复制 db+wal+shm 到 `%TEMP%` 临时目录避免与应用锁冲突，**用完即删**；1.10.2 起每轮同步还会主动清扫 `%TEMP%` 下 `dosage-trae-*` 历史残留（旧版本每小时遗留约 405MB 副本不清、Windows 不自动清临时目录，升级后首轮同步自动回收，无需手动清理）。目录可用 `TRAE_DATA_HOME` / `TRAECN_DATA_HOME` / `TRAESOLOCN_DATA_HOME` 覆盖。
+> **Trae 系统计口径说明**：读取 `%APPDATA%/<应用>/ModularData/ai-agent/database.db`（SQLCipher 整库加密，应用内置硬编码密钥解密）中 `chat_turn` 表的 `context` JSON 内 `token_usage` 五桶（`prompt_tokens` 含缓存命中，与其余源同口径）。注意 `token_usage` 为每 turn 的**累计值**——同一 session 后续 turn 会把前文上下文重复计入 prompt，统计天然偏大，这是 Trae 客户端计量方式；模型名本地不落盘（`token_usage.name` 为空），一期统一归因源名（trae / trae-cn / trae-solo / trae-solo-cn）；`created_at` 为秒级时间戳；幂等键为 `turn_id`。解密实现：koffi FFI + 内置 `resources/sqlcipher/`（sqlcipher.dll + libcrypto/libssl 三件套），读取时先复制 db+wal+shm 到 `%TEMP%` 临时目录避免与应用锁冲突，**用完即删**；1.10.2 起每轮同步还会主动清扫 `%TEMP%` 下 `dosage-trae-*` 历史残留（旧版本每小时遗留约 405MB 副本不清、Windows 不自动清临时目录，升级后首轮同步自动回收，无需手动清理）。目录可用 `TRAE_DATA_HOME` / `TRAECN_DATA_HOME` / `TRAESOLO_DATA_HOME` / `TRAESOLOCN_DATA_HOME` 覆盖。
 
 > **OpenSquilla 口径说明**：读取 `%APPDATA%/@opensquilla/desktop-electron/opensquilla/state/sessions.db`（明文 SQLite，WAL 模式只读直连）中 `usage_events` 表的逐次 LLM 调用记录，五桶齐全（`input_tokens` 含缓存命中，与其余源同口径；`cache_write_tokens` 映射 `cacheCreationTokens`）。一条 event = 一次模型调用（本机实测每 event 恰好一个 `usage_event_item`，无 ensemble 拆分）；`total_tokens = 0` 的失败重试行（`status='unknown'`）不采集；`run_kind` 全收——`session_turn` 对话、`session_naming` 自动命名与 `onboarding_probe` 系统探测均为真实消耗，`mode` 透传 `run_kind`。`provider` 采用事件原文（本机为 `tokenrhythm` 中转站），模型名走全项目统一规范化（`deepseek-v4-pro-0813` → `deepseek-v4-pro`）。幂等键为 `event_id`（全局唯一），增量锚点为 `started_at_ms`（毫秒）；设备标识取 `install_telemetry.json` 的 `install_id`，缺失回退 `gateway-ownership` profile hash。受源端 yoyo 迁移活跃影响，抽取前按列存在性做防御（缺列回退 0，面目全非才报错跳过该源）。目录可用 `OPEN_SQUILLA_HOME` 覆盖。
 

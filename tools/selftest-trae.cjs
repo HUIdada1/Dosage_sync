@@ -1,4 +1,4 @@
-// Trae 系适配器自测：FFI 解密 / 字段映射 / 增量 / 幂等 / 三源隔离 / 坏库降级 / 真实数据回归
+// Trae 系适配器自测：FFI 解密 / 字段映射 / 增量 / 幂等 / 四源隔离 / 坏库降级 / 真实数据回归
 // 运行：npm run selftest:trae（或 node tools/selftest-trae.cjs）
 // 说明：合成数据用 sqlcipher.dll 自身建加密库（与 Trae 同密钥同参数），临时目录 + 环境变量
 //       隔离，不触碰真实 %APPDATA% 数据；末尾真实数据回归为只读校验（本机存在真实库时才执行）。
@@ -13,6 +13,7 @@ const { makeTraeAdapter } = require("../electron/backend/adapter-trae-common.cjs
 const TRAE = require("../electron/backend/adapter-trae.cjs");
 const TRAE_CN = require("../electron/backend/adapter-trae-cn.cjs");
 const TRAE_SOLO = require("../electron/backend/adapter-trae-solo-cn.cjs");
+const TRAE_SOLO_INTL = require("../electron/backend/adapter-trae-solo.cjs");
 
 let pass = 0;
 let fail = 0;
@@ -69,7 +70,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "trae-selftest-"));
 const root = path.join(tmp, "Trae");
 const rootCn = path.join(tmp, "Trae CN");
 const rootSolo = path.join(tmp, "TRAE SOLO CN");
-for (const r of [root, rootCn, rootSolo]) {
+const rootSoloIntl = path.join(tmp, "TRAE SOLO");
+for (const r of [root, rootCn, rootSolo, rootSoloIntl]) {
   fs.mkdirSync(path.join(r, "ModularData", "ai-agent"), { recursive: true });
   fs.writeFileSync(path.join(r, "machineid"), `uuid-${path.basename(r)}`, "utf8");
 }
@@ -90,16 +92,22 @@ createDb(path.join(rootCn, "ModularData", "ai-agent", "database.db"), [
 createDb(path.join(rootSolo, "ModularData", "ai-agent", "database.db"), [
   { turn_id: "solo-1", session_id: "s-8", context: turnUsage(800, 20, 5, 0, 600), created_at: T2, turn_status: "completed", agent_type: "solo_work_lite" },
 ]);
+// SOLO 国际版：一条（沟槽归因源名 trae-solo）
+createDb(path.join(rootSoloIntl, "ModularData", "ai-agent", "database.db"), [
+  { turn_id: "solo-intl-1", session_id: "s-7", context: turnUsage(1200, 40, 3, 0, 0), created_at: T1, turn_status: "completed", agent_type: "solo_coder" },
+]);
 
 process.env.TRAE_DATA_HOME = root;
 process.env.TRAECN_DATA_HOME = rootCn;
 process.env.TRAESOLOCN_DATA_HOME = rootSolo;
+process.env.TRAESOLO_DATA_HOME = rootSoloIntl;
 
 {
   // detect / validate / getDeviceId
   eq("trae detect", TRAE.detect(), root);
   eq("trae-cn detect", TRAE_CN.detect(), rootCn);
   eq("solo detect", TRAE_SOLO.detect(), rootSolo);
+  eq("solo-intl detect", TRAE_SOLO_INTL.detect(), rootSoloIntl);
   ok("trae validate", TRAE.validate(root));
   eq("trae getDeviceId", TRAE.getDeviceId(root), "uuid-Trae");
 
@@ -138,6 +146,15 @@ process.env.TRAESOLOCN_DATA_HOME = rootSolo;
   eq("solo 抽取条数", soloRecs.length, 1);
   eq("solo source", soloRecs[0].source, "trae-solo-cn");
   eq("solo reasoning", soloRecs[0].reasoningTokens, 5);
+
+  // SOLO 国际版：与 CN 版目录隔离、源名独立
+  const soloIntlRecs = TRAE_SOLO_INTL.extract(rootSoloIntl, "dev1", "测试机", 0);
+  eq("solo-intl 抽取条数", soloIntlRecs.length, 1);
+  eq("solo-intl source", soloIntlRecs[0].source, "trae-solo");
+  eq("solo-intl id 幂等键", soloIntlRecs[0].id, "dev1:trae-solo:solo-intl-1");
+  eq("solo-intl inputTokens", soloIntlRecs[0].inputTokens, 1200);
+  eq("solo-intl reasoning", soloIntlRecs[0].reasoningTokens, 3);
+  eq("solo-intl mode=agent_type", soloIntlRecs[0].mode, "solo_coder");
 }
 
 // ============================================================
@@ -184,9 +201,11 @@ console.log("== 真实数据回归（只读，本机存在才执行）==");
   delete process.env.TRAE_DATA_HOME;
   delete process.env.TRAECN_DATA_HOME;
   delete process.env.TRAESOLOCN_DATA_HOME;
+  delete process.env.TRAESOLO_DATA_HOME;
   const cases = [
     ["Trae", TRAE, 862],
     ["Trae CN", TRAE_CN, 441],
+    ["TRAE SOLO", TRAE_SOLO_INTL, 1],
     ["TRAE SOLO CN", TRAE_SOLO, 1],
   ];
   for (const [label, adapter, expectMin] of cases) {
@@ -204,7 +223,7 @@ console.log("== 真实数据回归（只读，本机存在才执行）==");
     }
     ok(`${label} 真实库可解密抽取`, recs !== null, err ? err.message : "");
     if (recs) {
-      ok(`${label} 记录数 ≥ ${expectMin}（2026-09-11 实测）`, recs.length >= expectMin, `实际 ${recs.length}`);
+      ok(`${label} 记录数 ≥ ${expectMin}（本机实测）`, recs.length >= expectMin, `实际 ${recs.length}`);
       const total = recs.reduce((s, r) => s + r.inputTokens, 0);
       ok(`${label} 输入 token 汇总 > 0`, total > 0, `合计 ${total}`);
     }

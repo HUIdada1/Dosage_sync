@@ -1,10 +1,10 @@
-// Trae / Trae CN / TRAE SOLO CN 数据源公共工厂
+// Trae / Trae CN / TRAE SOLO / TRAE SOLO CN 数据源公共工厂
 // 用量权威来源：%APPDATA%\<AppName>\ModularData\ai-agent\database.db（SQLCipher 整库加密）
 //   chat_turn 表每行对应一次用户与 AI 的交互（一问一答），context 列（TEXT JSON）的
 //   token_usage 对象含五桶细分：prompt_tokens / completion_tokens / reasoning_tokens /
 //   cache_creation_input_tokens / cache_read_input_tokens。
 // 解密：sqlcipher.cjs（koffi FFI + 内置 sqlcipher.dll），密钥为应用内硬编码固定值
-//   （三应用通用，与机器/salt 无关，2026-09-11 内存搜索实测提取，详见
+//   （四应用通用，与机器/salt 无关，2026-09-11 内存搜索实测提取，详见
 //   docs/Trae数据源接入方案-2026-09-11.md）。
 // 口径（2026-09-11 本机实测）：
 //   - inputTokens = prompt_tokens（含 cache_read，与本项目其余源一致的总口径）；
@@ -12,7 +12,7 @@
 //     会把前文重复计入 prompt——这是 Trae 客户端计量方式，统计偏大属预期；
 //   - cache_creation 实测全 0；Trae CN 的 cache_read 亦全 0（无缓存机制）；
 //   - 模型名缺失（token_usage.name 为空、chat_turn 无 model 列），一期统一归因为
-//     源名（trae / trae-cn / trae-solo-cn），供应商按源名归一为 "Trae"。
+//     源名（trae / trae-cn / trae-solo / trae-solo-cn），供应商按源名归一为 "Trae"。
 // 幂等键：turn_id（全局唯一 24 位 hex）。
 // 增量：created_at 秒级时间戳（非毫秒），按统一锚点 since 过滤。
 // 优雅降级：DLL 缺失/密钥失效/库损坏时抛错由 sync 层记日志，不影响其他源。

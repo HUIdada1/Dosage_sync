@@ -1,7 +1,7 @@
 // SQLCipher 加密 SQLite 读取桥（Trae 系数据源专用）
-// 背景：Trae / Trae CN / TRAE SOLO CN 的会话主库 ModularData/ai-agent/database.db
+// 背景：Trae / Trae CN / TRAE SOLO / TRAE SOLO CN 的会话主库 ModularData/ai-agent/database.db
 //   为 SQLCipher 整库加密（AES-256-CBC + HMAC-SHA512，raw key 模式）。
-//   密钥为应用内硬编码固定值（三应用通用，与机器/salt 无关，2026-09-11 实测验证）。
+//   密钥为应用内硬编码固定值（四应用通用，与机器/salt 无关，2026-09-11 实测验证）。
 // 读取路径：koffi FFI 打开加密库 → sqlcipher_export 导出到内存明文库 → 句柄交给
 //   适配器直接查询（不走 node:sqlite，因为 node:sqlite 无 SQLCipher 支持且
 //   无法打开别人已 attach 的内存库——同一连接内完成全部查询）。

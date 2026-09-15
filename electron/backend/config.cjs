@@ -245,6 +245,7 @@ function defaultConfig() {
       { source: "antigravity-ide", enabled: false, dataDir: null },
       { source: "trae", enabled: false, dataDir: null },
       { source: "trae-cn", enabled: false, dataDir: null },
+      { source: "trae-solo", enabled: false, dataDir: null },
       { source: "trae-solo-cn", enabled: false, dataDir: null },
       { source: "opensquilla", enabled: false, dataDir: null },
       { source: "grok", enabled: false, dataDir: null },
@@ -252,7 +253,7 @@ function defaultConfig() {
     // 工具栏切换项显隐与排序：默认全部显示，顺序即下方 order。
     // initialized=false 表示首次启动尚未自动探测，loadConfig 会据本机数据源自动开启。
     sourceVisibility: {
-      order: ["zcode", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "trae", "trae-cn", "trae-solo-cn", "opensquilla", "grok"],
+      order: ["zcode", "codex", "dsh", "workbuddy", "workbuddy-ai", "reasonix", "codebuddy", "qoder", "qoder-cn", "antigravity", "antigravity-ide", "trae", "trae-cn", "trae-solo", "trae-solo-cn", "opensquilla", "grok"],
       hidden: [],
       initialized: false,
     },
