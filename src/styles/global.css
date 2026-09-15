@@ -34,6 +34,16 @@
   --sheen-sweep: rgba(37, 99, 235, 0.18);
   --sheen-line: rgba(37, 99, 235, 0.9);
   --accent-soft-3: rgba(37, 99, 235, 0.22);
+  /* ===== 液态玻璃（卡片/面板/弹窗共用） ===== */
+  --glass-bg: color-mix(in srgb, var(--surface) 64%, transparent);
+  --glass-bg-strong: color-mix(in srgb, var(--surface) 80%, transparent);
+  --glass-border: rgba(255, 255, 255, 0.6);
+  --glass-highlight: rgba(255, 255, 255, 0.7);
+  --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62), inset 0 -1px 0 rgba(30, 41, 59, 0.04);
+  --glass-glow: 0 1px 3px rgba(30, 41, 59, 0.05), 0 8px 32px rgba(30, 64, 175, 0.12),
+    0 0 0 1px rgba(37, 99, 235, 0.07), 0 0 22px rgba(37, 99, 235, 0.10);
+  --glass-glow-strong: 0 1px 3px rgba(30, 41, 59, 0.05), 0 10px 36px rgba(30, 64, 175, 0.2),
+    0 0 0 1px rgba(37, 99, 235, 0.18), 0 0 30px rgba(37, 99, 235, 0.22);
 }
 
 :root[data-theme="dark"] {
@@ -67,6 +77,16 @@
   --sheen-sweep: rgba(255, 255, 255, 0.14);
   --sheen-line: rgba(121, 168, 251, 0.95);
   --accent-soft-3: rgba(79, 141, 247, 0.32);
+  /* ===== 液态玻璃（卡片/面板/弹窗共用） ===== */
+  --glass-bg: color-mix(in srgb, var(--surface) 60%, transparent);
+  --glass-bg-strong: color-mix(in srgb, var(--surface) 78%, transparent);
+  --glass-border: rgba(148, 163, 184, 0.22);
+  --glass-highlight: rgba(226, 232, 240, 0.1);
+  --glass-shadow: inset 0 1px 0 rgba(226, 232, 240, 0.09), inset 0 -1px 0 rgba(0, 0, 0, 0.22);
+  --glass-glow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 8px 32px rgba(0, 0, 0, 0.38),
+    0 0 0 1px rgba(79, 141, 247, 0.12), 0 0 24px rgba(79, 141, 247, 0.12);
+  --glass-glow-strong: 0 1px 3px rgba(0, 0, 0, 0.3), 0 10px 38px rgba(0, 0, 0, 0.48),
+    0 0 0 1px rgba(79, 141, 247, 0.26), 0 0 32px rgba(79, 141, 247, 0.26);
 }
 
 * {
@@ -521,6 +541,97 @@ button {
   animation: pulse-glow 2.4s ease-in-out infinite;
 }
 
+/* ===== 顶栏分组 pill（组缩略名 + 下拉选择器） ===== */
+
+/* 组 pill 展开态：与 active 同色系但更轻，下拉箭头翻转 */
+.source-tab-group .grp-caret {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  opacity: .6;
+  transition: opacity .15s ease, transform .15s ease;
+}
+
+.source-tab-group:hover .grp-caret {
+  opacity: .9;
+}
+
+.source-tab-group.open {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: var(--accent-soft-2);
+}
+
+.source-tab-group.open .grp-caret {
+  transform: rotate(180deg);
+  opacity: 1;
+}
+
+/* 分组下拉菜单：Teleport 到 body，fixed 定位随 pill 位置 */
+.src-group-menu {
+  position: fixed;
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  box-shadow: var(--glass-glow), var(--glass-shadow);
+  animation: src-menu-in .13s ease;
+}
+
+.src-group-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-2);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .12s ease, color .12s ease;
+}
+
+.src-group-menu-item:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.src-group-menu-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+/* 菜单项启用圆点（静态，不参与 pill 上的脉冲动画） */
+.src-group-menu-item .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+@keyframes src-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .appbar .spacer {
   flex: 1;
   min-width: 8px;
@@ -767,12 +878,14 @@ button {
 
 /* ===== 同步进度 ===== */
 .syncbar {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  border: 1px solid var(--glass-border);
   border-radius: 13px;
   padding: 14px 16px;
   margin-bottom: 18px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--glass-glow), var(--glass-shadow);
 }
 
 .syncbar .head {
@@ -1116,11 +1229,13 @@ button {
 }
 
 .kpi {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  border: 1px solid var(--glass-border);
   border-radius: 14px;
   padding: 16px 17px 14px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--glass-glow), var(--glass-shadow);
   position: relative;
   overflow: hidden;
   transition: box-shadow .2s ease, border-color .2s ease, transform .2s ease, background-color .3s ease;
@@ -1157,7 +1272,7 @@ button {
 
 .kpi:hover {
   transform: translateY(-2px);
-  box-shadow: var(--glow);
+  box-shadow: var(--glass-glow-strong), var(--glass-shadow);
   border-color: var(--accent-soft-2);
 }
 
@@ -1223,14 +1338,16 @@ button {
   color: var(--ok);
 }
 
-/* ===== 卡片 ===== */
+/* ===== 卡片（液态玻璃） ===== */
 .card {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--glass-border);
   border-radius: 16px;
   padding: 18px 20px;
   margin-bottom: 18px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--glass-glow), var(--glass-shadow);
   transition: box-shadow .2s ease, border-color .2s ease, transform .2s ease, background-color .3s ease, color .3s ease;
   position: relative;
 }
@@ -1252,7 +1369,7 @@ button {
 }
 
 .card:hover {
-  box-shadow: var(--glow);
+  box-shadow: var(--glass-glow-strong), var(--glass-shadow);
   border-color: var(--border-strong);
 }
 
@@ -2224,6 +2341,101 @@ button {
   transform: translateX(18px);
 }
 
+/* ===== 设置页置顶 Tab 栏 ===== */
+/* 滚动时吸顶：毛玻璃背景 + 描边 + 圆角浮板，云纹/网格底不受遮挡影响观感 */
+.settings-tabs-bar {
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin: 0 0 16px;
+  padding: 8px 10px;
+  background: var(--bg);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+.settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  box-shadow: var(--shadow);
+}
+
+.settings-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 13px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: all .15s ease;
+}
+
+.settings-tab:hover {
+  color: var(--text-2);
+  background: var(--surface-3);
+}
+
+.settings-tab.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px var(--accent-soft-2);
+}
+
+.settings-tab-icon {
+  display: inline-flex;
+}
+
+.settings-tab-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.settings-tab.active .settings-tab-icon {
+  color: var(--accent);
+}
+
+/* Tab 栏右侧保存区：随栏吸顶常驻 */
+.settings-tabs-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.settings-tabs-right .save-feedback {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 设置面板切换入场 */
+.pane-in {
+  animation: fadeUp .28s cubic-bezier(.16, 1, .3, 1) both;
+}
+
 /* ===== 工具栏切换项自定义（显隐 + 排序） ===== */
 .setting-group .sg-hint {
   margin-left: auto;
@@ -2341,6 +2553,93 @@ button {
   height: 14px;
 }
 
+/* ===== 工具栏切换项 · 两级列表（组卡片 + 组内子项） ===== */
+
+/* 组卡片：整体可拖拽排序，与独立源条目同视觉层级但稍强调 */
+.vis-group {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+  overflow: hidden;
+  transition: border-color .15s ease, background .15s ease;
+}
+
+.vis-group.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* 组卡片头部：点击折叠/展开，右侧上移下移按钮（点击不触发折叠） */
+.vis-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background .12s ease;
+}
+
+.vis-group-head:hover {
+  background: var(--surface-3);
+}
+
+.vis-group-chev {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-3);
+  transition: transform .15s ease, color .15s ease;
+}
+
+/* 展开时箭头转 90° 朝下；折叠时朝右 */
+.vis-group-chev:not(.folded) {
+  transform: rotate(90deg);
+  color: var(--accent-strong);
+}
+
+.vis-group-head .v-title {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.vis-group-head .v-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.vis-group-head .v-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 组内子项容器：左缩进表示层级，子项复用 .visibility-item 行样式 */
+.vis-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 10px 10px 42px;
+  border-top: 1px dashed var(--border);
+  margin: 0 10px 0 10px;
+  background: transparent;
+}
+
+/* 子项行：与组卡片背景区分，层级更浅 */
+.visibility-item.vis-item-child {
+  background: var(--surface);
+  padding: 8px 12px;
+}
+
+.visibility-item.vis-item-child:hover {
+  border-color: var(--accent-soft-2);
+}
+
 /* ===== 空状态 ===== */
 .empty-state {
   display: flex;
@@ -2405,8 +2704,11 @@ button {
   bottom: 0;
   width: 420px;
   max-width: 92vw;
-  background: var(--surface);
-  border-left: 1px solid var(--border);
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border-left: 1px solid var(--glass-border);
+  box-shadow: inset 1px 0 0 var(--glass-highlight);
   z-index: 50;
   transform: translateX(100%);
   transition: transform .3s cubic-bezier(.16, 1, .3, 1), background-color .3s ease, border-color .3s ease;
@@ -2416,7 +2718,7 @@ button {
 
 .drawer.show {
   transform: translateX(0);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--glass-glow-strong), inset 1px 0 0 var(--glass-highlight);
 }
 
 .drawer .d-head {
@@ -2489,14 +2791,16 @@ button {
   transform: translate(-50%, -50%) scale(0.96);
   width: 460px;
   max-width: 92vw;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(26px) saturate(170%);
+  -webkit-backdrop-filter: blur(26px) saturate(170%);
+  border: 1px solid var(--glass-border);
   border-radius: 16px;
   z-index: 60;
   opacity: 0;
   pointer-events: none;
   transition: all .22s ease, background-color .3s ease, border-color .3s ease;
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--glass-glow-strong), var(--glass-shadow);
 }
 
 .modal.show {

@@ -3,6 +3,7 @@
 一个 Windows 托盘常驻工具：自动读取本机 ZCode、Codex、DeepSeek Harness、WorkBuddy、WorkBuddy AI、Reasonix、CodeBuddy、Qoder、Qoder CN、Antigravity、Antigravity IDE、Trae、Trae CN、TRAE SOLO、TRAE SOLO CN、OpenSquilla 与 Grok 的模型用量，按「电脑」为单元同步到自建 WebDAV，并在多台电脑之间汇总展示。
 
 - **多数据源已接入**：支持 ZCode、Codex、DeepSeek Harness（DSH）、WorkBuddy、WorkBuddy AI、Reasonix、CodeBuddy、Qoder、Qoder CN、Antigravity、Antigravity IDE、Trae、Trae CN、TRAE SOLO、TRAE SOLO CN、OpenSquilla、Grok 共 17 个数据源，各源可独立启用、探测、同步和筛选。
+- **顶栏两级分组（2026-09 新增）**：同族数据源在顶栏聚合为一个组按钮 + 下拉（WorkBuddy 系 / Trae 系 / Qoder 系 / Antigravity 系四族，其余源为独立按钮），组内只剩 1 个可见源时自动退化为普通按钮；设置页改为吸顶分区 Tab（数据存储 / 数据源 / 工具栏切换项 / 调度 / 外观 / 数据与版本），「工具栏切换项」支持组与子项两级拖拽排序（分组归属内置固定，用户只调顺序与显隐）。旧配置在升级后首次启动自动迁移为「组 + 成员」结构，原有排列不变。
 - **存储后端可扩展**：当前优先支持自建飞牛 fnOS 的 WebDAV，后续可增加 Nextcloud / 坚果云 / 群晖 / 自定义。
 - **本机存储（2026-09 新增）**：没有 WebDAV 也有数据安全网——设置页「数据存储」可切换「WebDAV 存储 / 本机存储」；本机存储把整库快照（汇总库 + 设置）打包为标准 zip 备份压缩包（默认存到数据缓存目录，可自定义，固定名覆盖式）。未配置 WebDAV 时顶栏「立即备份」与定时同步都会自动重新生成压缩包；支持「从压缩包恢复」整包还原数据与设置（恢复前自动留安全副本，失败自动回滚），详见 [本机存储备份方案](docs/本机存储备份方案-2026-09-10.md)。
 - **聚合灵活**：累计 token 可按软件源、设备、模型和供应商隔离查询，支持多模型多类型。
@@ -103,7 +104,7 @@
 | OpenSquilla | `%APPDATA%/@opensquilla/desktop-electron/opensquilla` | `state/sessions.db` 的 `usage_events` 五桶（明文 SQLite，逐次 LLM 调用） | 停用 |
 | Grok | `~/.grok` | `sessions/**/usage.json` 会话账本五桶（turn × 模型粒度，含 fork 多模型分账） | 停用 |
 
-Codex、DSH、CodeBuddy、Qoder 两源、两个 Antigravity 源、四个 Trae 源、OpenSquilla 与 Grok 需要在设置页手动启用（首次启动探测到数据会自动显示并启用）。十七个来源共用本机设备 ID，记录依靠 `source` 隔离；切换顶部数据源后，总览、设备、趋势、热力图与明细会同步切换统计范围，各源统计互不影响。WorkBuddy 与 WorkBuddy AI 是同一厂商的两个产品，目录与记录 id 前缀各自独立（`:workbuddy:` / `:workbuddy-ai:`），互不合并。Trae / Trae CN / TRAE SOLO / TRAE SOLO CN 的本地会话库为 SQLCipher 整库加密，应用内置密钥与 sqlcipher.dll 解密读取（密钥为 Trae 应用硬编码固定值，四应用通用；目标机器无需安装额外软件），详见 [Trae数据源接入方案](docs/Trae数据源接入方案-2026-09-11.md)。OpenSquilla 的用量账本为明文 SQLite，详见 [OpenSquilla数据源接入方案](docs/OpenSquilla数据源接入方案-2026-09-14.md)。Grok 的用量账本为 Grok CLI 落盘的会话级 JSON usage.json，详见 [Grok数据源接入方案](docs/Grok数据源接入方案-2026-09-14.md)。
+Codex、DSH、CodeBuddy、Qoder 两源、两个 Antigravity 源、四个 Trae 源、OpenSquilla 与 Grok 需要在设置页手动启用（首次启动探测到数据会自动显示并启用）。十七个来源共用本机设备 ID，记录依靠 `source` 隔离；切换顶部数据源后（同族源在顶栏聚合为组按钮 + 下拉，见上文「顶栏两级分组」），总览、设备、趋势、热力图与明细会同步切换统计范围，各源统计互不影响。WorkBuddy 与 WorkBuddy AI 是同一厂商的两个产品，目录与记录 id 前缀各自独立（`:workbuddy:` / `:workbuddy-ai:`），互不合并。Trae / Trae CN / TRAE SOLO / TRAE SOLO CN 的本地会话库为 SQLCipher 整库加密，应用内置密钥与 sqlcipher.dll 解密读取（密钥为 Trae 应用硬编码固定值，四应用通用；目标机器无需安装额外软件），详见 [Trae数据源接入方案](docs/Trae数据源接入方案-2026-09-11.md)。OpenSquilla 的用量账本为明文 SQLite，详见 [OpenSquilla数据源接入方案](docs/OpenSquilla数据源接入方案-2026-09-14.md)。Grok 的用量账本为 Grok CLI 落盘的会话级 JSON usage.json，详见 [Grok数据源接入方案](docs/Grok数据源接入方案-2026-09-14.md)。
 
 > **Token 口径说明（已实测确认）**：各 token 源的「输入」均包含缓存命中——ZCode 为源数据原生口径，DSH 由适配器归一化补入，Codex 已用本机 rollout 原始数据实测确认（OpenAI 语义中 `cached_input_tokens` 是 `input_tokens` 的子集），WorkBuddy 与 WorkBuddy AI 会话转录实测同口径。因此缓存命中率 = 缓存命中 / 输入在跨源对比时口径一致，命中率恒 ≤ 100%。WorkBuddy / WorkBuddy AI 的推理与缓存写入 token 从其原始回包（`providerData.rawUsage`）补入，源数据缺失时记 0；转录中的对话内容不会被读取或上传。WorkBuddy AI 的 `rawUsage.credit` 额度点**不写入 `credits` 列**——该列在汇总 SQL 中被直接计入 token 总量（为 Qoder「仅有 credits、token 全 0」设计），WorkBuddy AI 的 token 与 credit 并存，写入会造成同一笔调用双重计量。
 

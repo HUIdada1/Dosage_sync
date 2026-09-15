@@ -1,10 +1,21 @@
 // 应用级状态：配置、主题、当前数据源、同步状态
 import { defineStore } from "pinia";
-import type { AppConfig, SourceInfo, SyncProgress, SyncStage, TotalMode } from "../types";
+import type { AppConfig, SourceInfo, SourceVisibility, SyncProgress, SyncStage, TotalMode, TopBarItem } from "../types";
+import { GROUP_PREFIX, SOURCE_GROUPS, sourceGroupOf } from "../types";
 import * as api from "../api/ipc";
 
 // 浏览器 mock / 后端加载失败时的兜底默认值；后端权威默认值见 electron/backend/config.cjs
 import { TOTAL_MODES } from "../types";
+
+/** 组内子源顺序（纯函数，getter 与 action 共用）：用户自定义 groupOrder 优先，缺项按内置默认顺序补尾 */
+function childOrderOfList(vis: SourceVisibility, groupKey: string): string[] {
+  const def = SOURCE_GROUPS.find((g) => g.key === groupKey);
+  if (!def) return [];
+  const saved = vis.groupOrder?.[groupKey];
+  const list = Array.isArray(saved) ? Array.from(new Set(saved)).filter((id) => def.items.includes(id)) : [];
+  for (const id of def.items) if (!list.includes(id)) list.push(id);
+  return list;
+}
 const defaultConfig: AppConfig = {
   deviceName: "这台电脑",
   webdav: { endpoint: "", username: "", password: "", root: "/dosage-sync", preset: "feiniu" },
@@ -85,15 +96,69 @@ export const useAppStore = defineStore("app", {
     activeSourceEnabled(): boolean {
       return this.activeSource === ALL_SOURCES ? this.anyVisibleSourceEnabled : this.isSourceEnabled(this.activeSource);
     },
-    /** 按 sourceVisibility.order 排序后的全部来源（含隐藏项，供设置页排序用） */
-    orderedSources: (s) => {
+    /** 组内子源顺序（含隐藏项）：用户自定义 groupOrder 优先，缺项按内置默认顺序补尾 */
+    childOrderOf: (s) => (groupKey: string): string[] => childOrderOfList(s.config.sourceVisibility, groupKey),
+    /**
+     * 工具栏顶层条目（按 order 排序）。
+     * includeHidden=false（顶栏用）：组内 children 已剔除隐藏项；
+     * includeHidden=true（设置页用）：children 含全部成员。
+     * 组条目缺失/被隐藏到只剩 0 个可见子源时整组不出现；组内成员若散落在 order 中
+     * 只经其组渲染（不单独平铺），避免重复。
+     */
+    topItems: (s) => (includeHidden: boolean): TopBarItem[] => {
       const vis = s.config.sourceVisibility;
-      const rank = new Map((vis.order || []).map((id, i) => [id, i]));
-      return [...s.sources].sort(
-        (a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER)
-      );
+      const hidden = new Set(vis.hidden || []);
+      const byId = new Map(s.sources.map((x) => [x.id, x]));
+      const items: TopBarItem[] = [];
+      const used = new Set<string>();
+      const shown = new Set<string>();
+      for (const token of Array.isArray(vis.order) ? vis.order : []) {
+        if (typeof token !== "string") continue;
+        if (token.startsWith(GROUP_PREFIX)) {
+          const key = token.slice(GROUP_PREFIX.length);
+          const def = SOURCE_GROUPS.find((g) => g.key === key);
+          if (!def) continue;
+          const children = childOrderOfList(vis, key)
+            .map((id) => byId.get(id))
+            .filter((x): x is SourceInfo => !!x && (includeHidden || !hidden.has(x.id)));
+          if (!children.length) continue;
+          children.forEach((c) => used.add(c.id));
+          shown.add(key);
+          items.push({ kind: "group", key, label: def.label, children });
+        } else {
+          if (used.has(token)) continue;
+          // 组内成员只经其组渲染（配置迁移已保证组条目先于成员出现）
+          if (sourceGroupOf(token)) { used.add(token); continue; }
+          const src = byId.get(token);
+          if (!src) continue;
+          if (!includeHidden && hidden.has(token)) continue;
+          used.add(token);
+          items.push({ kind: "source", source: src });
+        }
+      }
+      // 兜底：不在 order 中的独立源补到末尾
+      for (const src of s.sources) {
+        if (used.has(src.id)) continue;
+        if (!includeHidden && hidden.has(src.id)) continue;
+        if (sourceGroupOf(src.id)) continue;
+        used.add(src.id);
+        items.push({ kind: "source", source: src });
+      }
+      // 兜底：组条目缺失但仍有成员的组，按其内置定义补到末尾。
+      // 组成员只会经组渲染（字面量在 order 中仅被跳过不渲染），故此处无需 used 过滤；
+      // 否则半迁移状态（部分组有条目、部分无）会因字面量被 used 消费而整组丢失。
+      for (const g of SOURCE_GROUPS) {
+        if (shown.has(g.key)) continue;
+        const children = childOrderOfList(vis, g.key)
+          .map((id) => byId.get(id))
+          .filter((x): x is SourceInfo => !!x && (includeHidden || !hidden.has(x.id)));
+        if (!children.length) continue;
+        children.forEach((c) => used.add(c.id));
+        items.push({ kind: "group", key: g.key, label: g.label, children });
+      }
+      return items;
     },
-    /** 顶栏可见来源：按 order 排序 + 过滤 hidden */
+    /** 顶栏可见来源：按 order 排序 + 过滤 hidden（组内成员平铺；供「全部」圆点等场景用） */
     visibleSources: (s) => {
       const vis = s.config.sourceVisibility;
       const hidden = new Set(vis.hidden || []);
@@ -117,6 +182,12 @@ export const useAppStore = defineStore("app", {
       if (!TOTAL_MODES[this.config.totalMode]) this.config.totalMode = "compact";
       } catch {
         this.config = { ...defaultConfig };
+      }
+      // 两级结构迁移：旧扁平 order 插入 g:组条目（有变更才落盘）
+      try {
+        if (this.migrateGroupOrder()) await api.saveConfig(this.config);
+      } catch {
+        /* 迁移落盘失败不阻断启动，下次加载重试 */
       }
       this.applyTheme(this.config.theme);
       this.loadDataDir();
@@ -177,30 +248,96 @@ export const useAppStore = defineStore("app", {
       await this.save();
     },
     /**
-     * 排序：将 source 移动到 targetIndex（可见/全部项在 orderedSources 中的下标）。
-     * 直接重写 order 数组并持久化。
+     * 两级结构迁移：旧的扁平 order（只有源 id）升级为「组条目 + 成员」结构——
+     * 在每个组的首个成员出现之前插入 `g:组key`。逐组补齐（非全有全无）：
+     * 半迁移状态（部分组已有条目）只补缺失的组条目，成员字面量顺序原样保留。返回是否变更。
      */
-    async moveSource(source: string, targetIndex: number) {
+    migrateGroupOrder(): boolean {
       const vis = this.config.sourceVisibility;
-      const order = this.orderedSources.map((s) => s.id);
-      const from = order.indexOf(source);
+      if (!vis || !Array.isArray(vis.order)) return false;
+      let changed = false;
+      const out: string[] = [];
+      const placed = new Set<string>();
+      for (const t of vis.order) {
+        if (typeof t !== "string") continue;
+        if (t.startsWith(GROUP_PREFIX)) {
+          placed.add(t.slice(GROUP_PREFIX.length));
+          out.push(t);
+          continue;
+        }
+        const def = sourceGroupOf(t);
+        if (def && !placed.has(def.key)) {
+          out.push(GROUP_PREFIX + def.key);
+          placed.add(def.key);
+          changed = true;
+        }
+        out.push(t);
+      }
+      // 后端已保证注册源均在 order 中；此处仅为防御：成员未出现的组补到末尾
+      for (const g of SOURCE_GROUPS) {
+        if (!placed.has(g.key)) {
+          out.push(GROUP_PREFIX + g.key);
+          changed = true;
+        }
+      }
+      if (!changed) return false;
+      vis.order = out;
+      return true;
+    },
+    /** 顶层排序（拖拽）：将条目 token（源 id 或 `g:组key`）移动到 targetIndex（顶层条目列表的下标） */
+    async moveTopItem(token: string, targetIndex: number) {
+      const items = this.topItems(true).map((it) => (it.kind === "group" ? GROUP_PREFIX + it.key : it.source.id));
+      const from = items.indexOf(token);
       if (from < 0) return;
-      const to = Math.max(0, Math.min(targetIndex, order.length - 1));
+      const to = Math.max(0, Math.min(targetIndex, items.length - 1));
       if (from === to) return;
-      const [moved] = order.splice(from, 1);
-      order.splice(to, 0, moved);
-      vis.order = order;
+      const order = (this.config.sourceVisibility.order || []).slice();
+      const f = order.indexOf(token);
+      if (f < 0) return;
+      order.splice(f, 1);
+      const targetToken = items[to];
+      const t = order.indexOf(targetToken);
+      if (t < 0) order.push(token);
+      else order.splice(t, 0, token);
+      this.config.sourceVisibility.order = order;
       await this.save();
     },
-    /** 将来源上移一位 */
-    async moveSourceUp(source: string) {
-      const idx = this.orderedSources.findIndex((s) => s.id === source);
-      if (idx > 0) await this.moveSource(source, idx - 1);
+    /** 顶层条目上移一位 */
+    async moveTopUp(token: string) {
+      const items = this.topItems(true).map((it) => (it.kind === "group" ? GROUP_PREFIX + it.key : it.source.id));
+      const idx = items.indexOf(token);
+      if (idx > 0) await this.moveTopItem(token, idx - 1);
     },
-    /** 将来源下移一位 */
-    async moveSourceDown(source: string) {
-      const idx = this.orderedSources.findIndex((s) => s.id === source);
-      if (idx >= 0 && idx < this.orderedSources.length - 1) await this.moveSource(source, idx + 1);
+    /** 顶层条目下移一位 */
+    async moveTopDown(token: string) {
+      const items = this.topItems(true).map((it) => (it.kind === "group" ? GROUP_PREFIX + it.key : it.source.id));
+      const idx = items.indexOf(token);
+      if (idx >= 0 && idx < items.length - 1) await this.moveTopItem(token, idx + 1);
+    },
+    /** 组内排序（拖拽）：将组内子源移到 targetIndex（该组子项列表的下标） */
+    async moveChildInGroup(groupKey: string, childId: string, targetIndex: number) {
+      const vis = this.config.sourceVisibility;
+      const go = vis.groupOrder || (vis.groupOrder = {});
+      const list = this.childOrderOf(groupKey);
+      const from = list.indexOf(childId);
+      if (from < 0) return;
+      const to = Math.max(0, Math.min(targetIndex, list.length - 1));
+      if (from === to) return;
+      const [moved] = list.splice(from, 1);
+      list.splice(to, 0, moved);
+      go[groupKey] = list;
+      await this.save();
+    },
+    /** 组内子源上移一位 */
+    async moveChildUp(groupKey: string, childId: string) {
+      const idx = this.childOrderOf(groupKey).indexOf(childId);
+      if (idx > 0) await this.moveChildInGroup(groupKey, childId, idx - 1);
+    },
+    /** 组内子源下移一位 */
+    async moveChildDown(groupKey: string, childId: string) {
+      const list = this.childOrderOf(groupKey);
+      const idx = list.indexOf(childId);
+      if (idx >= 0 && idx < list.length - 1) await this.moveChildInGroup(groupKey, childId, idx + 1);
     },
     setPage(page: "overview" | "detail" | "costs" | "billing" | "log" | "settings") {
       this.activePage = page;

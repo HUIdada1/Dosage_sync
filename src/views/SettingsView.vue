@@ -3,8 +3,8 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "../stores/app";
 import { useUsageStore } from "../stores/usage";
 import * as api from "../api/ipc";
-import { TOTAL_MODES } from "../types";
-import type { TotalMode, SourceHealth, BackupInfo } from "../types";
+import { TOTAL_MODES, GROUP_PREFIX } from "../types";
+import type { TotalMode, SourceHealth, BackupInfo, TopBarItem } from "../types";
 import type { UpdateStatus } from "../api/ipc";
 
 const app = useAppStore();
@@ -23,6 +23,18 @@ const exportResult = ref<{ ok: boolean; message: string } | null>(null);
 const resetResult = ref<{ ok: boolean; message: string } | null>(null);
 let exportResultTimer = 0;
 let resetResultTimer = 0;
+
+// ===== 设置页置顶 Tab（分组切换） =====
+type SettingTabKey = "storage" | "sources" | "toolbar" | "schedule" | "appearance" | "data";
+const settingTab = ref<SettingTabKey>("storage");
+const settingTabs: { key: SettingTabKey; label: string; icon: string }[] = [
+  { key: "storage", label: "数据存储", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>' },
+  { key: "sources", label: "数据源", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>' },
+  { key: "toolbar", label: "工具栏切换项", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>' },
+  { key: "schedule", label: "调度", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>' },
+  { key: "appearance", label: "外观", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" opacity=".2"/></svg>' },
+  { key: "data", label: "数据与版本", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>' },
+];
 
 // ===== 软件更新 =====
 const update = ref<UpdateStatus | null>(null);
@@ -284,6 +296,7 @@ onMounted(async () => {
   offUpdateEvent = api.onUpdateEvent?.((e) => {
     if (e.event === "focus-update") {
       app.setPage("settings");
+      settingTab.value = "data";
       // 双帧 rAF：等 v-show 切页渲染 + 窗口从托盘恢复完成后再滚动，避免布局未就绪滚动失效
       requestAnimationFrame(() => requestAnimationFrame(() => {
         document.getElementById("update-section")?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -358,9 +371,14 @@ async function setTheme(theme: "light" | "dark") {
   await autoSave();
 }
 
-// ===== 工具栏切换项自定义（显隐 + 排序） =====
-/** 排序列表：按 order 排序后的全部来源（含隐藏项），供拖拽与箭头使用 */
-const orderedSources = computed(() => app.orderedSources);
+// ===== 工具栏切换项（两级：组 + 子项，显隐 + 两级排序） =====
+/** 顶层条目（含隐藏项与全部组成员，供设置页两级列表渲染） */
+const topItems = computed(() => app.topItems(true));
+
+/** 顶层条目的配置 token：独立源 = 源 id；组 = `g:组key` */
+function itemToken(item: TopBarItem): string {
+  return item.kind === "group" ? GROUP_PREFIX + item.key : item.source.id;
+}
 
 function isVisible(source: string): boolean {
   return !(app.config.sourceVisibility.hidden || []).includes(source);
@@ -370,44 +388,91 @@ async function toggleVisible(source: string) {
   await app.setSourceVisible(source, !isVisible(source));
 }
 
-async function moveUp(source: string) {
-  await app.moveSourceUp(source);
+/** 组内可见子源数（用于组卡片摘要） */
+function visibleCount(item: TopBarItem): number {
+  return item.kind === "group" ? item.children.filter((c) => isVisible(c.id)).length : 0;
 }
 
-async function moveDown(source: string) {
-  await app.moveSourceDown(source);
+async function moveTopUp(token: string) {
+  await app.moveTopUp(token);
+}
+async function moveTopDown(token: string) {
+  await app.moveTopDown(token);
+}
+async function moveChildUp(groupKey: string, id: string) {
+  await app.moveChildUp(groupKey, id);
+}
+async function moveChildDown(groupKey: string, id: string) {
+  await app.moveChildDown(groupKey, id);
 }
 
-// —— 拖拽排序（HTML5 Drag and Drop）——
-const dragSource = ref<string | null>(null);
-const dragOverSource = ref<string | null>(null);
+/** 组卡片折叠（会话内状态，不持久化） */
+const collapsedGroups = ref<string[]>([]);
+function groupCollapsed(key: string): boolean {
+  return collapsedGroups.value.includes(key);
+}
+function toggleGroup(key: string) {
+  collapsedGroups.value = groupCollapsed(key)
+    ? collapsedGroups.value.filter((k) => k !== key)
+    : [...collapsedGroups.value, key];
+}
 
-function onDragStart(source: string, e: DragEvent) {
-  dragSource.value = source;
+// —— 拖拽排序（HTML5 Drag and Drop；顶层与组内两套载荷互不干扰）——
+type DragPayload = { kind: "top"; token: string } | { kind: "child"; group: string; id: string };
+const drag = ref<DragPayload | null>(null);
+const dragOver = ref<string | null>(null); // 顶层 token 或 `child:组key:源id` 的叠加目标
+
+function setDragData(e: DragEvent, text: string) {
   if (e.dataTransfer) {
     e.dataTransfer.effectAllowed = "move";
     // Firefox 需要 setData 才能启动拖拽
-    try { e.dataTransfer.setData("text/plain", source); } catch { /* 忽略 */ }
+    try { e.dataTransfer.setData("text/plain", text); } catch { /* 忽略 */ }
   }
 }
-function onDragOver(source: string, e: DragEvent) {
+/** 组卡片整体可拖（重排组位置）；但拖拽起点在组内子项上时不拦截（子项有自己的拖拽） */
+function onTopDragStart(token: string, e: DragEvent) {
+  if ((e.target as HTMLElement | null)?.closest(".vis-group-body")) return;
+  drag.value = { kind: "top", token };
+  setDragData(e, token);
+}
+function onTopDragOver(token: string, e: DragEvent) {
   e.preventDefault();
   if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-  if (dragOverSource.value !== source) dragOverSource.value = source;
+  if (dragOver.value !== token) dragOver.value = token;
 }
-function onDrop(source: string) {
-  const from = dragSource.value;
-  dragSource.value = null;
-  dragOverSource.value = null;
-  if (!from || from === source) return;
-  // 拖到目标项的位置（目标在有序列表中的下标）
-  const idx = orderedSources.value.findIndex((s) => s.id === source);
+function onTopDrop(token: string) {
+  const d = drag.value;
+  drag.value = null;
+  dragOver.value = null;
+  if (!d || d.kind !== "top" || d.token === token) return;
+  const idx = topItems.value.findIndex((it) => itemToken(it) === token);
   if (idx < 0) return;
-  app.moveSource(from, idx);
+  app.moveTopItem(d.token, idx);
+}
+function onChildDragStart(group: string, id: string, e: DragEvent) {
+  drag.value = { kind: "child", group, id };
+  setDragData(e, id);
+}
+function onChildDragOver(group: string, id: string, e: DragEvent) {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+  const token = `child:${group}:${id}`;
+  if (dragOver.value !== token) dragOver.value = token;
+}
+function onChildDrop(group: string, id: string) {
+  const d = drag.value;
+  drag.value = null;
+  dragOver.value = null;
+  if (!d || d.kind !== "child" || d.group !== group || d.id === id) return;
+  const g = topItems.value.find((it) => it.kind === "group" && it.key === group) as Extract<TopBarItem, { kind: "group" }> | undefined;
+  if (!g) return;
+  const idx = g.children.findIndex((c) => c.id === id);
+  if (idx < 0) return;
+  app.moveChildInGroup(group, d.id, idx);
 }
 function onDragEnd() {
-  dragSource.value = null;
-  dragOverSource.value = null;
+  drag.value = null;
+  dragOver.value = null;
 }
 function openDataDir() {
   api.openDataDir();
@@ -461,10 +526,30 @@ async function resetCache() {
 <template>
   <div>
     <div class="page-title">设置</div>
-    <div class="page-sub">数据存储 · 数据源 · 调度 · 外观</div>
+    <div class="page-sub">集中管理存储、数据源、调度与偏好设置</div>
+
+    <!-- 置顶 Tab 栏：滚动时吸顶，保存按钮常驻右侧 -->
+    <div class="settings-tabs-bar">
+      <div class="settings-tabs">
+        <button
+          v-for="t in settingTabs"
+          :key="t.key"
+          class="settings-tab"
+          :class="{ active: settingTab === t.key }"
+          @click="settingTab = t.key"
+        >
+          <span class="settings-tab-icon" v-html="t.icon"></span>
+          <span>{{ t.label }}</span>
+        </button>
+      </div>
+      <div class="settings-tabs-right">
+        <span v-if="saveResult" class="save-feedback" :class="{ ok: saveResult.ok }">{{ saveResult.message }}</span>
+        <button class="btn-sync" :disabled="saving" @click="save">{{ saving ? "保存中" : "保存设置" }}</button>
+      </div>
+    </div>
 
     <div class="card">
-      <div class="setting-group">
+      <div class="setting-group" v-show="settingTab === 'storage'" :class="{ 'pane-in': settingTab === 'storage' }">
         <div class="sg-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
           数据存储
@@ -529,7 +614,7 @@ async function resetCache() {
         </div>
       </div>
 
-      <div class="setting-group">
+      <div class="setting-group" v-show="settingTab === 'sources'" :class="{ 'pane-in': settingTab === 'sources' }">
         <div class="sg-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
           数据源
@@ -563,52 +648,117 @@ async function resetCache() {
         </div>
       </div>
 
-      <div class="setting-group">
+      <div class="setting-group" v-show="settingTab === 'toolbar'" :class="{ 'pane-in': settingTab === 'toolbar' }">
         <div class="sg-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7h8M8 12h8M8 17h8"/></svg>
           工具栏切换项
-          <span class="sg-hint">拖拽或点击箭头调整顺序 · 关闭开关可隐藏</span>
+          <span class="sg-hint">组与子项均可拖拽排序 · 组内顺序即顶栏下拉顺序 · 关闭开关可隐藏</span>
         </div>
         <div class="visibility-list">
-          <div
-            v-for="(s, i) in orderedSources"
-            :key="s.id"
-            class="visibility-item"
-            :class="{ dragging: dragSource === s.id, 'drag-over': dragOverSource === s.id && dragSource !== s.id, hidden: !isVisible(s.id) }"
-            :draggable="true"
-            @dragstart="onDragStart(s.id, $event)"
-            @dragover="onDragOver(s.id, $event)"
-            @drop="onDrop(s.id)"
-            @dragend="onDragEnd"
-          >
-            <span class="drag-handle" title="拖拽排序">
-              <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
-            </span>
-            <div class="v-title">
-              <span class="v-name">{{ s.name }}</span>
-              <span class="v-sub">#{{ i + 1 }}</span>
+          <template v-for="(item, i) in topItems" :key="item.kind === 'group' ? 'g' + item.key : item.source.id">
+            <!-- 独立源：单行条目（复用原扁平行交互） -->
+            <div
+              v-if="item.kind === 'source'"
+              class="visibility-item"
+              :class="{ dragging: drag?.kind === 'top' && drag.token === item.source.id, 'drag-over': dragOver === item.source.id && drag?.kind === 'top' && drag.token !== item.source.id, hidden: !isVisible(item.source.id) }"
+              :draggable="true"
+              @dragstart="onTopDragStart(item.source.id, $event)"
+              @dragover="onTopDragOver(item.source.id, $event)"
+              @drop="onTopDrop(item.source.id)"
+              @dragend="onDragEnd"
+            >
+              <span class="drag-handle" title="拖拽排序">
+                <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
+              </span>
+              <div class="v-title">
+                <span class="v-name">{{ item.source.name }}</span>
+                <span class="v-sub">#{{ i + 1 }}</span>
+              </div>
+              <div class="v-actions">
+                <button class="icon-btn-sm" :disabled="i === 0" title="上移" @click="moveTopUp(item.source.id)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                </button>
+                <button class="icon-btn-sm" :disabled="i === topItems.length - 1" title="下移" @click="moveTopDown(item.source.id)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                </button>
+                <div
+                  class="switch"
+                  :class="{ on: isVisible(item.source.id) }"
+                  role="switch"
+                  :aria-checked="isVisible(item.source.id)"
+                  :title="isVisible(item.source.id) ? '隐藏该项' : '显示该项'"
+                  @click="toggleVisible(item.source.id)"
+                ></div>
+              </div>
             </div>
-            <div class="v-actions">
-              <button class="icon-btn-sm" :disabled="i === 0" title="上移" @click="moveUp(s.id)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-              </button>
-              <button class="icon-btn-sm" :disabled="i === orderedSources.length - 1" title="下移" @click="moveDown(s.id)">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
-              </button>
-              <div
-                class="switch"
-                :class="{ on: isVisible(s.id) }"
-                role="switch"
-                :aria-checked="isVisible(s.id)"
-                :title="isVisible(s.id) ? '隐藏该项' : '显示该项'"
-                @click="toggleVisible(s.id)"
-              ></div>
+            <!-- 组：卡片（折叠 + 组级排序 + 组内子项排序/显隐） -->
+            <div
+              v-else
+              class="vis-group"
+              :class="{ 'drag-over': dragOver === itemToken(item) && drag?.kind === 'top' && drag.token !== itemToken(item) }"
+              :draggable="true"
+              @dragstart="onTopDragStart(itemToken(item), $event)"
+              @dragover="onTopDragOver(itemToken(item), $event)"
+              @drop="onTopDrop(itemToken(item))"
+              @dragend="onDragEnd"
+            >
+              <div class="vis-group-head" @click="toggleGroup(item.key)">
+                <svg class="vis-group-chev" :class="{ folded: groupCollapsed(item.key) }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+                <div class="v-title">
+                  <span class="v-name">{{ item.label }}</span>
+                  <span class="v-sub">{{ item.children.length }} 项 · 可见 {{ visibleCount(item) }}</span>
+                </div>
+                <div class="v-actions" @click.stop>
+                  <button class="icon-btn-sm" :disabled="i === 0" title="上移" @click="moveTopUp(itemToken(item))">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                  </button>
+                  <button class="icon-btn-sm" :disabled="i === topItems.length - 1" title="下移" @click="moveTopDown(itemToken(item))">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div v-if="!groupCollapsed(item.key)" class="vis-group-body">
+                <div
+                  v-for="(c, ci) in item.children"
+                  :key="c.id"
+                  class="visibility-item vis-item-child"
+                  :class="{ dragging: drag?.kind === 'child' && drag.group === item.key && drag.id === c.id, 'drag-over': dragOver === 'child:' + item.key + ':' + c.id && drag?.kind === 'child' && drag.id !== c.id, hidden: !isVisible(c.id) }"
+                  :draggable="true"
+                  @dragstart="onChildDragStart(item.key, c.id, $event)"
+                  @dragover="onChildDragOver(item.key, c.id, $event)"
+                  @drop="onChildDrop(item.key, c.id)"
+                  @dragend="onDragEnd"
+                >
+                  <span class="drag-handle" title="组内拖拽排序">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
+                  </span>
+                  <div class="v-title">
+                    <span class="v-name">{{ c.name }}</span>
+                  </div>
+                  <div class="v-actions">
+                    <button class="icon-btn-sm" :disabled="ci === 0" title="组内上移" @click="moveChildUp(item.key, c.id)">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                    </button>
+                    <button class="icon-btn-sm" :disabled="ci === item.children.length - 1" title="组内下移" @click="moveChildDown(item.key, c.id)">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                    </button>
+                    <div
+                      class="switch"
+                      :class="{ on: isVisible(c.id) }"
+                      role="switch"
+                      :aria-checked="isVisible(c.id)"
+                      :title="isVisible(c.id) ? '隐藏该项' : '显示该项'"
+                      @click="toggleVisible(c.id)"
+                    ></div>
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
+          </template>
         </div>
       </div>
 
-      <div class="setting-group">
+      <div class="setting-group" v-show="settingTab === 'schedule'" :class="{ 'pane-in': settingTab === 'schedule' }">
         <div class="sg-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
           调度
@@ -623,7 +773,7 @@ async function resetCache() {
         <div class="switch-row"><div class="s-left"><div class="s-title">同步成功也通知</div><div class="s-desc">默认关闭，仅同步失败时弹系统通知</div></div><div class="switch" :class="{ on: cfg.schedule.notifyOnSuccess }" @click="toggleSchedule('notifyOnSuccess')"></div></div>
       </div>
 
-      <div class="setting-group">
+      <div class="setting-group" v-show="settingTab === 'appearance'" :class="{ 'pane-in': settingTab === 'appearance' }">
         <div class="sg-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" opacity=".2"/></svg>
           外观与口径
@@ -643,10 +793,10 @@ async function resetCache() {
         </div>
       </div>
 
-      <div class="setting-group" style="margin-bottom: 0">
+      <div class="setting-group" style="margin-bottom: 0" v-show="settingTab === 'data'" :class="{ 'pane-in': settingTab === 'data' }">
         <div class="sg-title">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-          数据与关于
+          数据与版本
         </div>
         <div class="switch-row"><div class="s-left"><div class="s-title">导出 CSV</div><div class="s-desc">导出全部明细（按筛选导出请到「用量明细」页）</div></div><button class="btn-outline" @click="exportData('csv')">导出</button></div>
         <div class="switch-row"><div class="s-left"><div class="s-title">导出 JSON</div><div class="s-desc">导出统一用量模型原始数据</div></div><button class="btn-outline" @click="exportData('json')">导出</button></div>
@@ -691,11 +841,6 @@ async function resetCache() {
         </div>
         <div class="switch-row"><div class="s-left"><div class="s-title">自动检测新版本</div><div class="s-desc">启动后及每 6 小时自动检查一次，发现新版本时通知（便携版仅提示手动更新）</div></div><div class="switch" :class="{ on: cfg.update.autoCheck }" @click="toggleAutoCheck"></div></div>
         <div class="switch-row"><div class="s-left"><div class="s-title">作者</div><div class="s-desc">用量同步工具</div></div><span class="hint">沐辉玄制作</span></div>
-      </div>
-
-      <div style="margin-top: 20px; display: flex; justify-content: flex-end">
-        <span v-if="saveResult" class="save-feedback" :class="{ ok: saveResult.ok }">{{ saveResult.message }}</span>
-        <button class="btn-sync" :disabled="saving" @click="save">{{ saving ? "保存中" : "保存设置" }}</button>
       </div>
     </div>
   </div>

@@ -140,15 +140,47 @@ export interface SourceInfo {
 /**
  * 工具栏切换项自定义配置：控制顶栏各数据源 Tab 的显示/隐藏与排列顺序。
  * 与 sources[].enabled（是否同步）相互独立：隐藏 ≠ 停用，排序 ≠ 启用。
+ * 顶层顺序 order 的条目为「源 id」或「组条目 `g:${组key}`」（两级结构）；
+ * 旧版本只认识扁平源 id，遇到新配置自动退化为平铺展示，数据不受影响。
  */
 export interface SourceVisibility {
-  /** 有序的 id 列表：顶栏 Tab 的显示顺序（未列出的源按适配器注册顺序补在末尾） */
+  /** 有序的顶层条目列表：源 id 或 `g:组key`（未列出的源按适配器注册顺序补在末尾） */
   order: string[];
-  /** 被隐藏（不在顶栏显示）的 id 列表 */
+  /** 被隐藏（不在顶栏显示）的源 id 列表 */
   hidden: string[];
+  /** 组内子项顺序（{ 组key: [源id...] }）；缺失时回退 SOURCE_GROUPS 内置默认顺序 */
+  groupOrder?: Record<string, string[]>;
   /** 是否已完成首次初始化（首次启动自动探测后置 true，避免重复覆盖用户自定义） */
   initialized: boolean;
 }
+
+/** 内置源家族分组：顶栏/工具栏两级结构的展示层定义（归属固定，用户只调顺序与显隐） */
+export interface SourceGroupDef {
+  key: string; // 组唯一键；顶层 order 中以 `g:${key}` 表示
+  label: string; // 组缩略名（顶栏 pill 与设置页组卡片显示）
+  items: string[]; // 组内源 id（同时是组内默认顺序：主程序在前）
+}
+
+/** 内置固定分组（WorkBuddy 系 / Trae 系 / Qoder 系 / Antigravity 系）；其余源为独立源不进组 */
+export const SOURCE_GROUPS: SourceGroupDef[] = [
+  { key: "workbuddy", label: "WorkBuddy", items: ["workbuddy", "workbuddy-ai", "codebuddy"] },
+  { key: "trae", label: "Trae", items: ["trae", "trae-cn", "trae-solo", "trae-solo-cn"] },
+  { key: "qoder", label: "Qoder", items: ["qoder", "qoder-cn"] },
+  { key: "antigravity", label: "Antigravity", items: ["antigravity", "antigravity-ide"] },
+];
+
+/** 顶层 order 中组条目的前缀 */
+export const GROUP_PREFIX = "g:";
+
+/** 查询源所属内置组；独立源返回 null */
+export function sourceGroupOf(sourceId: string): SourceGroupDef | null {
+  return SOURCE_GROUPS.find((g) => g.items.includes(sourceId)) ?? null;
+}
+
+/** 工具栏顶层条目：独立源 或 组（children 已按组内顺序排列） */
+export type TopBarItem =
+  | { kind: "source"; source: SourceInfo }
+  | { kind: "group"; key: string; label: string; children: SourceInfo[] };
 
 /** 调度配置 */
 export interface ScheduleConfig {
