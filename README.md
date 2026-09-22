@@ -1,5 +1,8 @@
 # 用量同步（Dosage Sync）
 
+-------------------------------------------------------------------
+此库已转移至我的AgentHub项目进行聚合
+-------------------------------------------------------------------
 一个 Windows 托盘常驻工具：自动读取本机 ZCode、Codex、DeepSeek Harness、WorkBuddy、WorkBuddy AI、Reasonix、CodeBuddy、Qoder、Qoder CN、Antigravity、Antigravity IDE、Trae、Trae CN、TRAE SOLO、TRAE SOLO CN、OpenSquilla 与 Grok 的模型用量，按「电脑」为单元同步到自建 WebDAV，并在多台电脑之间汇总展示。
 
 - **多数据源已接入**：支持 ZCode、Codex、DeepSeek Harness（DSH）、WorkBuddy、WorkBuddy AI、Reasonix、CodeBuddy、Qoder、Qoder CN、Antigravity、Antigravity IDE、Trae、Trae CN、TRAE SOLO、TRAE SOLO CN、OpenSquilla、Grok 共 17 个数据源，各源可独立启用、探测、同步和筛选。
